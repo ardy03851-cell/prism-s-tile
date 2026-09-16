@@ -91,6 +91,44 @@ const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
 const wrapHue = h => ((h % 360) + 360) % 360;
 
 /* ============================================================
+   EXTRA HUD  (built in JS — no stylesheet changes)
+   ============================================================ */
+const sectionTag = document.createElement('div');
+sectionTag.id = 'sectionTag';
+sectionTag.style.cssText =
+  'position:absolute;left:50%;top:calc(env(safe-area-inset-top,0px) + 26px);' +
+  'transform:translateX(-50%) translateY(-8px);' +
+  'font:800 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0.42em;' +
+  'text-transform:uppercase;opacity:0;pointer-events:none;white-space:nowrap;' +
+  'transition:opacity .45s ease,transform .45s ease;' +
+  'text-shadow:0 2px 14px rgba(255,255,255,.75);';
+hudEl.appendChild(sectionTag);
+
+const odWrap = document.createElement('div');
+odWrap.style.cssText =
+  'position:absolute;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 30px);' +
+  'transform:translateX(-50%);width:min(48vw,320px);height:10px;border-radius:999px;' +
+  'background:rgba(20,18,40,.13);box-shadow:inset 0 0 0 2px rgba(20,18,40,.16);' +
+  'overflow:visible;opacity:0;pointer-events:none;transition:opacity .4s ease;';
+const odTrack = document.createElement('div');
+odTrack.style.cssText =
+  'position:absolute;inset:0;border-radius:999px;overflow:hidden;';
+odWrap.appendChild(odTrack);
+const odFill = document.createElement('div');
+odFill.style.cssText =
+  'position:absolute;left:0;top:0;bottom:0;width:0%;border-radius:999px;' +
+  'background:linear-gradient(90deg,var(--accent,#ff8a68),var(--mint,#7de0c0),var(--sky,#8ab6ff));' +
+  'transition:width .10s linear;';
+odTrack.appendChild(odFill);
+const odLabel = document.createElement('div');
+odLabel.style.cssText =
+  'position:absolute;left:50%;top:-20px;transform:translateX(-50%);' +
+  'font:800 9px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0.30em;' +
+  'color:var(--ink,#33304a);opacity:0;white-space:nowrap;transition:opacity .3s ease;';
+odWrap.appendChild(odLabel);
+hudEl.appendChild(odWrap);
+
+/* ============================================================
    THREE
    ============================================================ */
 const canvas = $('c');
@@ -108,8 +146,8 @@ const BASE_FOV = 46;
 const camera = new THREE.PerspectiveCamera(BASE_FOV, window.innerWidth / window.innerHeight, 0.1, 400);
 camera.position.set(7.0, 6.4, 10.0);
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0xc4d6e8, 1.9));
-const hemiLight = scene.children[scene.children.length - 1];
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0xc4d6e8, 1.9);
+scene.add(hemiLight);
 const keyLight = new THREE.DirectionalLight(0xffffff, 2.05);
 keyLight.position.set(6, 14, 9); scene.add(keyLight);
 const rimLight = new THREE.DirectionalLight(0xffd8c0, 0.7);
@@ -124,6 +162,7 @@ gradientMap.needsUpdate = true;
 
 const INK = 0x33304a;
 const outlineMat = new THREE.MeshBasicMaterial({ color: INK, side: THREE.BackSide });
+const WHITE = new THREE.Color(0xffffff);
 
 /* ---- Sky gradient backdrop ---------------------------------- */
 let skyTexture = null;
@@ -207,7 +246,6 @@ const deco = createDecoSystem(scene, { density: 1 });
 
 /* ============================================================
    SURFACE SHINE  (injected into MeshToonMaterial)
-   A soft band of light sweeps diagonally across the tile face.
    ============================================================ */
 function patchShine(mesh) {
   const u = {
@@ -334,6 +372,36 @@ cueRing.rotation.x = -Math.PI / 2;
 cueRing.visible = false;
 scene.add(cueRing);
 
+/* ---- Hold bar ----------------------------------------------- */
+const holdBgGeo = new THREE.BoxGeometry(1.54, 0.05, 0.13);
+const holdFillGeo = new THREE.BoxGeometry(1.50, 0.075, 0.16);
+holdFillGeo.translate(0.75, 0, 0);
+const holdBars = [];
+for (let i = 0; i < 4; i++) {
+  const bg = new THREE.Mesh(holdBgGeo, new THREE.MeshBasicMaterial({
+    color: INK, transparent: true, opacity: 0.22, depthWrite: false
+  }));
+  const fill = new THREE.Mesh(holdFillGeo, new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.95, depthWrite: false
+  }));
+  bg.visible = false; fill.visible = false;
+  scene.add(bg); scene.add(fill);
+  holdBars.push({ bg, fill });
+}
+
+/* ---- Swipe arrows ------------------------------------------- */
+const arrowGeo = new THREE.ConeGeometry(0.27, 0.44, 3);
+arrowGeo.rotateZ(-Math.PI / 2);
+const arrows = [];
+for (let i = 0; i < 3; i++) {
+  const m = new THREE.Mesh(arrowGeo, new THREE.MeshBasicMaterial({
+    color: INK, transparent: true, opacity: 0.78, depthWrite: false, side: THREE.DoubleSide
+  }));
+  m.visible = false;
+  scene.add(m);
+  arrows.push(m);
+}
+
 /* ============================================================
    GOLDEN TILES — shockwave + shard burst
    ============================================================ */
@@ -343,7 +411,7 @@ const GOLD_SOFT = new THREE.Color(0xffe9a8);
 
 const shockGeo = new THREE.RingGeometry(0.44, 0.60, 64);
 const shockPool = [];
-for (let i = 0; i < 18; i++) {
+for (let i = 0; i < 20; i++) {
   const m = new THREE.Mesh(shockGeo, new THREE.MeshBasicMaterial({
     color: 0xffc93c, transparent: true, opacity: 0, depthWrite: false,
     side: THREE.DoubleSide, blending: THREE.AdditiveBlending
@@ -398,7 +466,7 @@ function updateShocks(dt) {
 
 const shardGeo = new THREE.OctahedronGeometry(0.11, 0);
 const shardPool = [];
-for (let i = 0; i < 96; i++) {
+for (let i = 0; i < 110; i++) {
   const m = new THREE.Mesh(shardGeo, new THREE.MeshBasicMaterial({
     color: 0xffc93c, transparent: true, opacity: 0, depthWrite: false,
     blending: THREE.AdditiveBlending
@@ -412,7 +480,7 @@ for (let i = 0; i < 96; i++) {
 }
 let shardCursor = 0;
 
-function burstShards(pos, n) {
+function burstShards(pos, n, colorA, colorB) {
   for (let i = 0; i < n; i++) {
     const s = shardPool[shardCursor++ % shardPool.length];
     const a = Math.random() * Math.PI * 2;
@@ -420,7 +488,7 @@ function burstShards(pos, n) {
     s.vel.set(Math.cos(a) * sp, 1.5 + Math.random() * 2.8, Math.sin(a) * sp);
     s.spin.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14);
     s.mesh.position.set(pos.x + (Math.random() - 0.5) * 0.5, pos.y + 0.35, pos.z + (Math.random() - 0.5) * 0.5);
-    s.mesh.material.color.copy(Math.random() < 0.5 ? GOLD_HOT : GOLD);
+    s.mesh.material.color.copy(Math.random() < 0.5 ? (colorA || GOLD_HOT) : (colorB || GOLD));
     s.mesh.scale.setScalar(0.6 + Math.random() * 0.9);
     s.mesh.visible = true;
     s.active = true;
@@ -444,14 +512,12 @@ function updateShards(dt) {
   }
 }
 
-/* Small pop for an ordinary perfect landing */
 function spawnMiniShockwave(pos) {
   spawnShock(pos, WHITE, { delay: 0, dur: 0.36, from: 0.30, to: 1.55, peak: 0.34, y: 0.30 });
   spawnShock(pos, theme.accent, { delay: 0.04, dur: 0.52, from: 0.20, to: 2.0, peak: 0.18, y: 0.32 });
   burstShards(pos, 5);
 }
 
-/* Full golden shockwave — three rings + shards */
 function spawnGoldShockwave(pos) {
   spawnShock(pos, GOLD_HOT, { delay: 0, dur: 0.52, from: 0.35, to: 3.8, peak: 0.95, y: 0.30 });
   spawnShock(pos, GOLD, { delay: 0.06, dur: 0.92, from: 0.22, to: 5.0, peak: 0.55, y: 0.32, rise: 0.55 });
@@ -517,6 +583,7 @@ function makeTheme(seed) {
 
   return {
     seed: seed >>> 0,
+    baseHue: h0,
     tiles: tileCols, ink, bg, paper2, player, particle, mint, sky,
     ring: ink.clone().lerp(tileCols[0], 0.35),
     accent, accent2,
@@ -530,6 +597,7 @@ function applyTheme(th) {
   if (skyTexture) skyTexture.dispose();
   skyTexture = makeSkyTexture(th.bg, th.paper2, th.ink);
   scene.background = skyTexture;
+  scene.backgroundIntensity = 1;
   scene.fog.color.copy(th.bg);
 
   outlineMat.color.copy(th.ink);
@@ -539,12 +607,13 @@ function applyTheme(th) {
   cueRing.material.color.copy(th.ring);
   for (const p of particles) p.material.color.copy(th.particle);
   for (const m of trailMeshes) m.material.color.copy(th.player);
+  for (const a of arrows) a.material.color.copy(th.ink);
+  for (const h of holdBars) h.bg.material.color.copy(th.ink);
   grid.material.color.copy(th.ink);
   for (let i = 0; i < bars.length; i++) {
     bars[i].material.color.copy(th.tiles[i % th.tiles.length]);
   }
 
-  /* Scenery picks up the palette too */
   deco.setTheme(th);
 
   const rs = document.documentElement.style;
@@ -604,12 +673,12 @@ async function ensureRunning() {
   return ctx;
 }
 
-function blip(freq, gain, dur) {
+function blip(freq, gain, dur, type) {
   if (!actx || actx.state !== 'running') return;
   try {
     const o = actx.createOscillator();
     const g = actx.createGain();
-    o.type = 'sine';
+    o.type = type || 'sine';
     o.frequency.value = freq;
     g.gain.setValueAtTime(0, actx.currentTime);
     g.gain.linearRampToValueAtTime(gain, actx.currentTime + 0.004);
@@ -623,6 +692,22 @@ function blip(freq, gain, dur) {
 ['touchstart', 'touchend', 'pointerdown', 'click', 'keydown'].forEach(ev => {
   document.addEventListener(ev, () => { unlockAudio(); }, { passive: true });
 });
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
+function smoothArr(a, w) {
+  const n = a.length;
+  const out = new Float32Array(n);
+  if (n === 0) return out;
+  const pre = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + a[i];
+  for (let i = 0; i < n; i++) {
+    const lo = Math.max(0, i - w), hi = Math.min(n, i + w + 1);
+    out[i] = (pre[hi] - pre[lo]) / (hi - lo);
+  }
+  return out;
+}
 
 /* ============================================================
    BEAT ANALYSIS — three bands + onset snapping
@@ -779,9 +864,129 @@ function fallbackGrid(duration) {
     low.push(0.4); mid.push(0.4); high.push(0.4);
     weights.push(0.5); types.push('mid');
   }
-  return { beats, energies, low, mid, high, weights, types, bpm: 110 };
+  return {
+    beats, energies, low, mid, high, weights, types, bpm: 110,
+    hold: new Array(beats.length).fill(0),
+    sections: []
+  };
 }
 
+/* ============================================================
+   SONG STRUCTURE — verse / build / chorus / drop detection
+   ------------------------------------------------------------
+   We build a coarse (4 Hz) energy curve out of the combined
+   onset novelty plus the low band, smooth it, then cut it at
+   prominent local minima. Each resulting segment is classified
+   by its energy relative to the loudest segment in the song.
+   ============================================================ */
+const SECTION_INTEN = {
+  intro: 0.26, build: 0.58, verse: 0.46,
+  chorus: 0.78, drop: 1.00, break: 0.20, outro: 0.20
+};
+const SECTION_LABEL = {
+  intro: 'INTRO', build: 'BUILD', verse: 'VERSE',
+  chorus: 'CHORUS', drop: 'DROP', break: 'BREAK', outro: 'OUTRO'
+};
+
+function detectSections(bands, duration) {
+  const { comb, low, fps, frames } = bands;
+  const cs = 4;
+  const n = Math.max(6, Math.floor(duration * cs));
+  const raw = new Float32Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor((i / cs) * fps);
+    const b = Math.min(frames - 1, Math.ceil(((i + 1) / cs) * fps));
+    let s = 0, c = 0;
+    for (let j = a; j <= b; j++) { s += comb[j] * 0.62 + low[j] * 0.38; c++; }
+    raw[i] = c ? s / c : 0;
+  }
+
+  const sm = smoothArr(raw, Math.round(cs * 1.9));
+  let peak = 0;
+  for (let i = 0; i < n; i++) if (sm[i] > peak) peak = sm[i];
+
+  if (peak < 1e-5) {
+    return [{ t: 0, end: duration, e: 0.5, rel: 0.7, kind: 'verse', label: 'VERSE' }];
+  }
+
+  const minGap = Math.max(8, Math.round(cs * 7));
+  const bounds = [0];
+  for (let i = minGap; i < n - minGap; i++) {
+    let isMin = true;
+    for (let j = i - minGap; j <= i + minGap; j++) {
+      if (j < 0 || j >= n) continue;
+      if (sm[j] < sm[i] - 1e-7) { isMin = false; break; }
+    }
+    if (!isMin) continue;
+
+    let lmax = 0, rmax = 0;
+    for (let j = Math.max(0, i - minGap * 2); j < i; j++) if (sm[j] > lmax) lmax = sm[j];
+    for (let j = i + 1; j <= Math.min(n - 1, i + minGap * 2); j++) if (sm[j] > rmax) rmax = sm[j];
+
+    const prom = Math.min(lmax, rmax) - sm[i];
+    if (prom < peak * 0.20) continue;
+    if (i - bounds[bounds.length - 1] < minGap) continue;
+    bounds.push(i);
+  }
+  bounds.push(n);
+
+  let segs = [];
+  for (let k = 0; k < bounds.length - 1; k++) {
+    const a = bounds[k], b = bounds[k + 1];
+    if (b - a < cs * 2) continue;
+    let s = 0;
+    for (let i = a; i < b; i++) s += sm[i];
+    segs.push({ t: a / cs, end: b / cs, e: (s / (b - a)) / peak });
+  }
+
+  /* merge very short segments into their predecessor */
+  const merged = [];
+  for (const s of segs) {
+    if (merged.length && (s.end - s.t) < 4.0) {
+      merged[merged.length - 1].end = s.end;
+    } else {
+      merged.push(s);
+    }
+  }
+  segs = merged;
+  if (!segs.length) {
+    return [{ t: 0, end: duration, e: 0.5, rel: 0.7, kind: 'verse', label: 'VERSE' }];
+  }
+  segs[0].t = 0;
+  segs[segs.length - 1].end = duration;
+
+  let maxE = 0;
+  for (const s of segs) if (s.e > maxE) maxE = s.e;
+  if (maxE < 1e-6) maxE = 1;
+
+  for (let k = 0; k < segs.length; k++) {
+    const s = segs[k];
+    const rel = s.e / maxE;
+    const next = k < segs.length - 1 ? segs[k + 1].e / maxE : rel;
+
+    let kind;
+    if (rel > 0.78) kind = 'drop';
+    else if (rel > 0.55) kind = 'chorus';
+    else if (rel > 0.32) kind = 'verse';
+    else kind = 'break';
+
+    if (k === 0 && rel < 0.55) kind = 'intro';
+    if (k === segs.length - 1 && rel < 0.50) kind = 'outro';
+    if (next - rel > 0.22 && next > 0.72) kind = 'build';
+
+    s.rel = rel;
+    s.kind = kind;
+    s.label = SECTION_LABEL[kind];
+    s.inten = SECTION_INTEN[kind];
+  }
+
+  return segs;
+}
+
+/* ============================================================
+   GRID BUILD
+   ============================================================ */
 function buildGrid(phaseSec, bpm, duration, bands, peaks) {
   const period = 60 / bpm;
   const minT = 1.35;
@@ -884,10 +1089,37 @@ function buildGrid(phaseSec, bpm, duration, bands, peaks) {
     return arr.map(v => clamp(v / mx, 0, 1));
   }
 
+  const nLow = norm(low), nMid = norm(mid), nHigh = norm(high);
+
+  /* ---- SUSTAIN DETECTION -----------------------------------
+     A beat becomes a hold when the next beat is far away AND
+     the low band never really dips in between. That is exactly
+     what a sustained bass note / held vocal looks like. */
+  const hold = new Array(out.length).fill(0);
+  const HOLD_STEPS = 7;
+  for (let i = 0; i < out.length - 1; i++) {
+    const gap = out[i + 1].t - out[i].t;
+    if (gap < 1.00) continue;
+    if (nLow[i] < 0.45) continue;
+
+    let mn = Infinity, sum = 0, c = 0;
+    for (let k = 1; k <= HOLD_STEPS; k++) {
+      const tt = out[i].t + gap * (k / (HOLD_STEPS + 1));
+      const v = bandAt(bands.low, tt);
+      if (v < mn) mn = v;
+      sum += v; c++;
+    }
+    const avg = sum / c;
+    if (c && mn > avg * 0.52 && avg > 0.28) {
+      hold[i] = Math.min(gap * 0.82, 2.1);
+    }
+  }
+
   return {
     beats, energies, types,
-    low: norm(low), mid: norm(mid), high: norm(high),
+    low: nLow, mid: nMid, high: nHigh,
     weights,
+    hold,
     bpm: Math.round(bpm)
   };
 }
@@ -895,7 +1127,7 @@ function buildGrid(phaseSec, bpm, duration, bands, peaks) {
 async function analyzeBuffer(buffer, onProgress) {
   const duration = Math.min(buffer.duration, MAX_ANALYSIS_SECONDS);
 
-  onProgress(0.18, 'Splitting the spectrum…');
+  onProgress(0.16, 'Splitting the spectrum…');
   await nextFrame();
 
   const sr = ANALYSIS_SR;
@@ -922,11 +1154,14 @@ async function analyzeBuffer(buffer, onProgress) {
   merger.connect(off.destination);
   src.start(0);
 
-  let rendered;
+  let rendered = null;
   try {
     rendered = await off.startRendering();
   } catch (e) {
     console.warn('Offline render failed, falling back', e);
+  }
+
+  if (!rendered) {
     const ch = buffer.getChannelData(0);
     const band = computeNovelty(ch, buffer.sampleRate);
     const bands = combineBands(band, band, band);
@@ -935,10 +1170,13 @@ async function analyzeBuffer(buffer, onProgress) {
     const peaks = pickPeaks(bands.comb, bands.frames, bands.fps, 0.13);
     const grid = buildGrid(phase, bpm, duration, bands, peaks);
     grid.seed = seedFrom(bands.comb, bands.frames, bpm, duration);
+    grid.sections = detectSections(bands, duration);
+    onProgress(1.0, 'Ready');
+    await nextFrame();
     return grid;
   }
 
-  onProgress(0.52, 'Hunting for onsets…');
+  onProgress(0.50, 'Hunting for onsets…');
   await nextFrame();
 
   const low = computeNovelty(rendered.getChannelData(0), sr);
@@ -946,7 +1184,7 @@ async function analyzeBuffer(buffer, onProgress) {
   const high = computeNovelty(rendered.getChannelData(2), sr);
   const bands = combineBands(low, mid, high);
 
-  onProgress(0.74, 'Counting the tempo…');
+  onProgress(0.70, 'Counting the tempo…');
   await nextFrame();
 
   let bpm = estimateTempo(bands.comb, bands.frames, bands.fps);
@@ -954,12 +1192,17 @@ async function analyzeBuffer(buffer, onProgress) {
 
   const phase = findPhase(bands.comb, bands.frames, bands.fps, bpm);
 
-  onProgress(0.88, 'Chasing the syncopation…');
+  onProgress(0.84, 'Chasing the syncopation…');
   await nextFrame();
 
   const peaks = pickPeaks(bands.comb, bands.frames, bands.fps, 0.12);
   const grid = buildGrid(phase, bpm, duration, bands, peaks);
   grid.seed = seedFrom(bands.comb, bands.frames, bpm, duration);
+
+  onProgress(0.93, 'Mapping the arrangement…');
+  await nextFrame();
+
+  grid.sections = detectSections(bands, duration);
 
   onProgress(1.0, 'Ready');
   await nextFrame();
@@ -983,8 +1226,6 @@ function seedFrom(nov, frames, bpm, duration) {
 /* ============================================================
    LEVEL
    ============================================================ */
-const WHITE = new THREE.Color(0xffffff);
-
 function buildLevel(beatTimes, energies, seed, extra) {
   const n = beatTimes.length;
   const x = new Float32Array(n), y = new Float32Array(n), z = new Float32Array(n);
@@ -996,6 +1237,7 @@ function buildLevel(beatTimes, energies, seed, extra) {
   const weights = (extra && extra.weights) || new Array(n).fill(0.5);
   const lows = (extra && extra.low) || new Array(n).fill(0.4);
   const highs = (extra && extra.high) || new Array(n).fill(0.4);
+  const hold = (extra && extra.hold) || new Array(n).fill(0);
 
   const rnd = mulberry32((seed >>> 0) ^ 0x9e3779b9);
   const pal = theme.tiles;
@@ -1011,6 +1253,7 @@ function buildLevel(beatTimes, energies, seed, extra) {
     const e = energies[i] != null ? energies[i] : 0.5;
     const w = weights[i] != null ? weights[i] : 0.5;
     const type = types[i] || 'mid';
+    const isHold = hold[i] > 0;
 
     if (i > 0) {
       const dt = clamp(beatTimes[i] - beatTimes[i - 1], 0.20, 3.2);
@@ -1019,6 +1262,7 @@ function buildLevel(beatTimes, energies, seed, extra) {
       let push = 2.55 + w * 1.85;
       if (type === 'bass') push += 0.60;
       else if (type === 'hat') push -= 0.45;
+      if (isHold) push -= 0.55;
 
       const step = clamp(dt * push * breathe, 1.25, 7.4);
       cz -= step;
@@ -1050,21 +1294,36 @@ function buildLevel(beatTimes, energies, seed, extra) {
     let sc = 0.86 + e * 0.26;
     if (type === 'bass') sc += 0.24;
     else if (type === 'hat') sc -= 0.17;
+    if (isHold) sc += 0.10;
     scale[i] = clamp(sc, 0.60, 1.50);
 
     rot[i] = (rnd() - 0.5) * 0.55 + (type === 'hat' ? 0.22 : 0);
   }
 
-  /* ==========================================================
-     GOLDEN CANDIDATES
-     Only a small handful of beats per run are eligible to turn
-     gold. They are picked from the musically strongest moments
-     (heavy bass / strong snare) and kept well apart so each one
-     feels like an event rather than a constant.
-     ========================================================== */
-  const golden = new Uint8Array(n);        // 1 once the player has earned it
+  /* ---- SWIPE GESTURES --------------------------------------
+     Only placed where the path itself swings hard sideways on
+     an accented beat, so the gesture is *always* motivated by
+     the shape of the music, never arbitrary. */
+  const swipe = new Int8Array(n);
+  {
+    let lastSwipe = -99;
+    for (let i = 1; i < n - 1; i++) {
+      if (i - lastSwipe < 7) continue;
+      const dx = x[i + 1] - x[i];
+      if (Math.abs(dx) < 1.00) continue;
+      const ty = types[i] || 'mid';
+      if (ty === 'hat') continue;
+      if ((weights[i] || 0.5) < 0.48) continue;
+      if (hold[i] > 0 || hold[i + 1] > 0) continue;
+      swipe[i] = dx > 0 ? 1 : -1;
+      lastSwipe = i;
+    }
+  }
+
+  /* ---- GOLDEN CANDIDATES ----------------------------------- */
+  const golden = new Uint8Array(n);
   const goldenT = new Float32Array(n).fill(-1);
-  const goldCand = new Uint8Array(n);      // 1 = eligible
+  const goldCand = new Uint8Array(n);
 
   if (n > 8) {
     const want = clamp(Math.round(n / 26), 3, 7);
@@ -1088,6 +1347,7 @@ function buildLevel(beatTimes, energies, seed, extra) {
         if (goldCand[j] && Math.abs(j - r.i) < minGap) { ok = false; break; }
       }
       if (!ok) continue;
+      if (hold[r.i] > 0 || swipe[r.i] !== 0) continue;
       goldCand[r.i] = 1;
       placed++;
     }
@@ -1095,7 +1355,7 @@ function buildLevel(beatTimes, energies, seed, extra) {
     if (placed < 2) {
       for (let k = 1; k <= 3; k++) {
         const i = Math.round((n * k) / 4);
-        if (i > 0 && i < n - 1) goldCand[i] = 1;
+        if (i > 0 && i < n - 1 && hold[i] === 0 && swipe[i] === 0) goldCand[i] = 1;
       }
     }
   }
@@ -1103,6 +1363,7 @@ function buildLevel(beatTimes, energies, seed, extra) {
   return {
     beats: beatTimes, energies, x, y, z, colors, count: n,
     types, weights, low: lows, high: highs, scale, rot, landSquash,
+    hold, swipe,
     golden, goldenT, goldCand
   };
 }
@@ -1124,13 +1385,32 @@ const state = {
   flow: 0,
   flowOn: false,
   landKick: 0,
-  lastAnalysis: null
+  lastAnalysis: null,
+
+  /* --- new systems --- */
+  sections: [],
+  sectionIdx: -1,
+  inten: 0.4,
+  charge: 0,
+  odReady: false,
+  odOn: false,
+  odT: 0,
+  odDur: 0,
+  odWait: 0,
+  odPct: -1
 };
+
 let judged = [], judgePtr = 0;
 let judgedOffset = [], resolvedFlags = [], resolvePtr = 0;
 let score = 0, combo = 0, maxCombo = 0;
-let goldCount = 0;
+let goldCount = 0, holdCount = 0, swipeCount = 0;
 let counts = { perfect: 0, good: 0, ok: 0, miss: 0 };
+
+/* gesture state */
+let ptr = null;
+let lastTapIdx = -1;
+let lastTapTime = -999;
+let holdIdx = -1;
 
 const camTarget = new THREE.Vector3();
 const CAM_OFFSET = new THREE.Vector3(6.8, 6.0, 9.6);
@@ -1140,6 +1420,7 @@ const _fullPos = new THREE.Vector3();
 const _tmpA = new THREE.Vector3();
 const _tmpB = new THREE.Vector3();
 const _wavePos = new THREE.Vector3();
+const _secCol = new THREE.Color();
 
 const smootherstep = t => t * t * t * (t * (t * 6 - 15) + 10);
 
@@ -1182,6 +1463,12 @@ function buildMenuLevel() {
   state.pIdx = 0;
   state.menuTime = 0;
   state.squash = 0;
+  state.sections = [];
+  state.sectionIdx = -1;
+  state.inten = 0.4;
+  state.odOn = false;
+  state.odReady = false;
+  state.charge = 0;
   camTarget.set(state.level.x[0], state.level.y[0], state.level.z[0]);
   camera.position.copy(camTarget).add(CAM_OFFSET);
   deco.build(state.level, 0xBEA7);
@@ -1221,6 +1508,7 @@ function updatePlayerTransform(t, dt) {
       let arcH = 0.42 + dist * 0.15 + interval * 0.30 + nextW * 0.55;
       if (nextType === 'bass') arcH += 0.40;
       else if (nextType === 'hat') arcH -= 0.16;
+      if (state.odOn) arcH += 0.22;
       arcH = clamp(arcH, 0.30, 2.4);
 
       const arc = Math.sin(p * Math.PI);
@@ -1237,7 +1525,6 @@ function updatePlayerTransform(t, dt) {
   state.hopProgress = p;
   playerGroup.position.copy(_fullPos);
 
-  /* frame-rate independent squash recovery */
   state.squash += (0 - state.squash) * (1 - Math.exp(-dt * 11));
   const stretch = airborne * 0.20;
   let sy = (1 + state.squash) * (1 + stretch);
@@ -1247,7 +1534,7 @@ function updatePlayerTransform(t, dt) {
 
   const easedP = smootherstep(p);
   playerMesh.rotation.x = -easedP * Math.PI * 2;
-  playerMesh.rotation.y += 0.006 + state.pulse * 0.014;
+  playerMesh.rotation.y += 0.006 + state.pulse * 0.014 + (state.odOn ? 0.02 : 0);
 
   shadowMesh.position.set(_groundPos.x, _groundPos.y + 0.225, _groundPos.z);
   const h = Math.max(0, _fullPos.y - _groundPos.y);
@@ -1259,7 +1546,8 @@ function updatePlayerTransform(t, dt) {
 /* ---- trail -------------------------------------------------- */
 function updateTrail(dt) {
   trailTimer += dt;
-  if (trailTimer >= 0.032) {
+  const rate = state.odOn ? 0.020 : 0.032;
+  if (trailTimer >= rate) {
     trailTimer = 0;
     const last = trailHist.pop();
     last.pos.copy(playerGroup.position);
@@ -1268,14 +1556,20 @@ function updateTrail(dt) {
   }
   for (let i = 0; i < TRAIL_N; i++) {
     const h = trailHist[i];
-    h.a *= Math.exp(-dt * 2.6);
+    h.a *= Math.exp(-dt * (state.odOn ? 1.9 : 2.6));
     const m = trailMeshes[i];
     const k = h.a * (1 - i / TRAIL_N);
     if (k < 0.02) { m.visible = false; continue; }
     m.visible = true;
     m.position.copy(h.pos);
-    m.material.opacity = k * 0.16;
+    m.material.opacity = k * (state.odOn ? 0.30 : 0.16);
     m.scale.setScalar(0.40 + k * 0.75);
+    if (state.odOn) {
+      const hue = (worldTime * 0.6 - i * 0.05) % 1;
+      m.material.color.setHSL(hue < 0 ? hue + 1 : hue, 0.8, 0.62);
+    } else {
+      m.material.color.copy(theme.player);
+    }
   }
 }
 
@@ -1289,6 +1583,7 @@ function updateTiles(t, dt) {
   const base = state.pIdx - 4;
   const nextIdx = state.pIdx + 1;
   const pulse = state.pulse;
+  const od = state.odOn;
 
   for (let k = 0; k < TILE_POOL; k++) {
     const idx = base + k;
@@ -1309,6 +1604,8 @@ function updateTiles(t, dt) {
     const weight = L.weights[idx] != null ? L.weights[idx] : 0.5;
     const isGolden = L.golden[idx] === 1;
     const isCand = !isGolden && L.goldCand[idx] === 1;
+    const holdDur = L.hold ? L.hold[idx] : 0;
+    const isHold = holdDur > 0;
 
     let gFlash = 0;
     if (isGolden) {
@@ -1333,7 +1630,21 @@ function updateTiles(t, dt) {
     if (type === 'hat') glow += 0.04;
     if (state.flowOn) emissive += 0.07 * theme.glow;
 
-    /* ---- landing squash (indie "jelly" feel) ---- */
+    /* --- hold tile: breathing, charged --- */
+    let holdProgress = 0;
+    if (isHold) {
+      const active = (idx === holdIdx);
+      if (active) {
+        holdProgress = clamp((state.songTime - L.beats[idx]) / holdDur, 0, 1);
+        glow += 0.20 + holdProgress * 0.30;
+        emissive += (0.24 + holdProgress * 0.5) * theme.glow;
+        pop += Math.sin(t * 14) * 0.02;
+      } else if (idx === nextIdx) {
+        glow += 0.10 + 0.08 * Math.sin(t * 5.0);
+        emissive += 0.10 * theme.glow;
+      }
+    }
+
     let land = 0;
     if (L.landSquash) {
       L.landSquash[idx] *= Math.exp(-dt * 10);
@@ -1346,16 +1657,23 @@ function updateTiles(t, dt) {
     const s = baseScale * (0.4 + spawnEase * 0.6) * (1 + pop) * goldPop;
     const sqY = 1 - land * 0.26;
     const sqXZ = 1 + land * 0.11;
-    m.scale.set(s * sqXZ, s * sqY, s * sqXZ);
+    const zStretch = isHold ? 1.22 + holdProgress * 0.10 : 1;
+    m.scale.set(s * sqXZ, s * sqY, s * sqXZ * zStretch);
 
     const bob = Math.sin(t * 1.2 + idx * 0.7) * (0.05 + (idx === state.pIdx ? pulse * 0.08 : 0));
-    m.position.set(L.x[idx], L.y[idx] + bob - land * 0.10, L.z[idx]);
+    const lift = isHold && idx === holdIdx ? 0.06 + holdProgress * 0.10 : 0;
+    m.position.set(L.x[idx], L.y[idx] + bob + lift - land * 0.10, L.z[idx]);
 
     m.rotation.y = L.rot[idx] + Math.sin(t * 0.45 + idx) * 0.05;
     m.rotation.z = Math.sin(t * 0.6 + idx * 1.3) * 0.012;
 
     /* ---- Colour ---- */
-    if (isGolden) {
+    if (od) {
+      const hue = ((worldTime * 0.30 + idx * 0.045) % 1 + 1) % 1;
+      m.material.color.setHSL(hue, 0.70, 0.66);
+      m.material.emissive.setHSL(hue, 0.85, 0.34)
+        .multiplyScalar(0.45 + pulse * 0.55 + glow * 0.4);
+    } else if (isGolden) {
       m.material.color.copy(GOLD).lerp(WHITE, clamp(0.12 + glow * 0.55 + gFlash * 0.65, 0, 0.92));
       m.material.emissive.copy(GOLD).multiplyScalar(
         0.26 + emissive + gFlash * 1.10 + pulse * 0.28
@@ -1374,12 +1692,55 @@ function updateTiles(t, dt) {
       sh.uShineT.value = worldTime * (isGolden ? 0.62 : isCand ? 0.36 : 0.27) + idx * 0.19;
       sh.uShineAmt.value = isGolden
         ? 0.38 + gFlash * 1.15 + pulse * 0.20
-        : isCand
-          ? 0.17 + glow * 0.42 + (idx === state.pIdx ? pulse * 0.10 : 0)
-          : 0.085 + glow * 0.38 + (idx === state.pIdx ? pulse * 0.10 : 0);
+        : isHold && idx === holdIdx
+          ? 0.32 + holdProgress * 0.28
+          : isCand
+            ? 0.17 + glow * 0.42 + (idx === state.pIdx ? pulse * 0.10 : 0)
+            : 0.085 + glow * 0.38 + (idx === state.pIdx ? pulse * 0.10 : 0);
       sh.uShineCol.value.copy(isGolden ? GOLD_HOT : isCand ? GOLD_SOFT : WHITE);
     }
   }
+}
+
+/* ---- hold bar + swipe arrow --------------------------------- */
+function updateHoldBars(t) {
+  for (const h of holdBars) { h.bg.visible = false; h.fill.visible = false; }
+  if (state.mode !== 'play' && state.mode !== 'results') return;
+  const L = state.level;
+  if (!L || holdIdx < 0) return;
+  const dur = L.hold[holdIdx];
+  if (!(dur > 0)) return;
+
+  const p = clamp((state.songTime - L.beats[holdIdx]) / dur, 0, 1);
+  const slot = holdBars[0];
+  getTilePos(holdIdx, t, _tmpA);
+  const y = _tmpA.y + 1.02;
+
+  slot.bg.position.set(_tmpA.x, y, _tmpA.z);
+  slot.fill.position.set(_tmpA.x - 0.75, y, _tmpA.z);
+  slot.bg.visible = true;
+  slot.fill.visible = true;
+  slot.fill.scale.x = Math.max(0.001, p);
+  slot.fill.material.color.copy(theme.accent).lerp(theme.mint, p);
+  slot.bg.material.opacity = 0.20 + p * 0.10;
+}
+
+function updateArrows(t) {
+  for (const a of arrows) a.visible = false;
+  if (state.mode !== 'play' && state.mode !== 'results') return;
+  const L = state.level;
+  if (!L) return;
+  const idx = state.pIdx + 1;
+  if (idx >= L.count) return;
+  const dir = L.swipe[idx];
+  if (!dir) return;
+
+  const a = arrows[0];
+  getTilePos(idx, t, _tmpA);
+  a.position.set(_tmpA.x, _tmpA.y + 0.90 + Math.sin(t * 3.4) * 0.07, _tmpA.z);
+  a.scale.x = dir;
+  a.material.opacity = 0.55 + 0.30 * (0.5 + 0.5 * Math.sin(t * 5.2));
+  a.visible = true;
 }
 
 /* ============================================================
@@ -1417,10 +1778,7 @@ function updateCueRing() {
 }
 
 /* ============================================================
-   FEEDBACK — animated, flavourful landing text
-   ------------------------------------------------------------
-   Uses the Web Animations API on an inner wrapper so the
-   container's own positioning from style.css is never touched.
+   FEEDBACK
    ============================================================ */
 const FLAVORS = {
   perfect: ['FLAWLESS', 'SILKY', 'ON POINT', 'SHARP', 'CLEAN', 'SMOOTH', 'NAILED IT', 'SNAP', 'BUTTER'],
@@ -1473,7 +1831,6 @@ function showFeedback(text, cls, opts = {}) {
   try {
     if (typeof wrap.animate === 'function') {
       wrap.animate(frames, { duration: dur, easing: 'cubic-bezier(.18,.9,.28,1)', fill: 'forwards' });
-
       if (tail && typeof tail.animate === 'function') {
         tail.animate([
           { transform: 'translateY(10px) scale(0.8)', opacity: 0 },
@@ -1481,7 +1838,6 @@ function showFeedback(text, cls, opts = {}) {
         ], { duration: 280, delay: 90, easing: 'cubic-bezier(.2,1.4,.4,1)', fill: 'forwards' });
       }
     } else {
-      /* Fallback: no WAAPI — still show the text */
       wrap.style.opacity = '1';
       wrap.style.transform = 'scale(1)';
     }
@@ -1496,6 +1852,31 @@ function showFeedback(text, cls, opts = {}) {
     feedbackEl.className = '';
     feedbackEl.innerHTML = '';
   }, gold ? 1220 : 880);
+}
+
+/* Small secondary toast that never clobbers the main grade text */
+function floatChip(text, color, yPct) {
+  if (!hudEl) return;
+  const el = document.createElement('div');
+  el.textContent = text;
+  el.style.cssText =
+    'position:absolute;left:50%;top:' + (yPct || 60) + '%;' +
+    'transform:translate(-50%,0);font:800 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+    'letter-spacing:0.24em;color:' + (color || 'var(--accent)') + ';white-space:nowrap;' +
+    'text-shadow:0 2px 12px rgba(255,255,255,.85);pointer-events:none;opacity:0;';
+  hudEl.appendChild(el);
+  try {
+    const anim = el.animate([
+      { transform: 'translate(-50%,4px) scale(.72)', opacity: 0 },
+      { transform: 'translate(-50%,-10px) scale(1.14)', opacity: 1, offset: 0.22 },
+      { transform: 'translate(-50%,-38px) scale(1)', opacity: 0 }
+    ], { duration: 820, easing: 'cubic-bezier(.2,.9,.3,1)' });
+    anim.onfinish = () => el.remove();
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 1000);
+  } catch (e) {
+    el.style.opacity = '1';
+    setTimeout(() => el.remove(), 820);
+  }
 }
 
 let timingTimer = null;
@@ -1530,18 +1911,110 @@ function updateHUD() {
   else flowTag.classList.remove('on');
 }
 
+function updateODMeter() {
+  const show = state.charge > 0.01 || state.odOn;
+  odWrap.style.opacity = show ? '1' : '0';
+  if (!show) return;
+
+  if (state.odOn) {
+    if (state.odPct !== 200) {
+      state.odPct = 200;
+      odFill.style.width = '100%';
+      odFill.style.filter = 'brightness(1.4) saturate(1.3)';
+      odLabel.textContent = 'PRISM OVERDRIVE';
+      odLabel.style.opacity = '1';
+    }
+    return;
+  }
+
+  const pct = Math.round(state.charge * 100);
+  if (pct !== state.odPct) {
+    state.odPct = pct;
+    odFill.style.width = pct + '%';
+    odFill.style.filter = state.odReady ? 'brightness(1.25)' : 'none';
+    odLabel.textContent = state.odReady ? 'PRISM READY' : 'PRISM';
+    odLabel.style.opacity = (state.charge > 0.06 || state.odReady) ? '0.78' : '0';
+  }
+}
+
 function flowBurst() {
   blip(1760, 0.05, 0.16);
   state.camShake = Math.max(state.camShake, 0.012);
 }
 
+function showSection(sec) {
+  if (!sec) return;
+  const col = sec.color ? ('#' + sec.color.getHexString()) : 'var(--ink)';
+  sectionTag.textContent = sec.label;
+  sectionTag.style.color = col;
+  sectionTag.style.opacity = '0.9';
+  sectionTag.style.transform = 'translateX(-50%) translateY(0)';
+  clearTimeout(showSection._t);
+  showSection._t = setTimeout(() => {
+    sectionTag.style.opacity = '0';
+    sectionTag.style.transform = 'translateX(-50%) translateY(-8px)';
+  }, 2000);
+}
+
+/* ============================================================
+   OVERDRIVE
+   ============================================================ */
+function addCharge(v) {
+  if (state.odOn) return;
+  state.charge = clamp(state.charge + v, 0, 1);
+  if (state.charge >= 1 && !state.odReady) {
+    state.odReady = true;
+    state.odWait = 0;
+    floatChip('PRISM READY', 'var(--accent)', 66);
+    blip(1560, 0.040, 0.30);
+    setTimeout(() => blip(2340, 0.030, 0.34), 110);
+  }
+  updateODMeter();
+}
+
+function startOverdrive(sec) {
+  state.odReady = false;
+  state.odOn = true;
+  state.odT = 0;
+  state.odPct = -1;
+  state.charge = 1;
+
+  const remain = sec ? Math.max(2, sec.end - state.songTime) : 10;
+  state.odDur = clamp(remain, 6, 20);
+
+  showFeedback('OVERDRIVE', 'perfect', { gold: true, flavor: 'PRISM UNLEASHED' });
+  state.camShake = Math.max(state.camShake, 0.030);
+  state.pulse = Math.max(state.pulse, 1.2);
+  getTilePos(state.pIdx, state.songTime, _wavePos);
+  spawnGoldShockwave(_wavePos);
+  blip(880, 0.055, 0.5, 'triangle');
+  setTimeout(() => blip(1320, 0.045, 0.6, 'triangle'), 80);
+  updateODMeter();
+}
+
+function endOverdrive() {
+  state.odOn = false;
+  state.charge = 0;
+  state.odPct = -1;
+  updateODMeter();
+}
+
+function updateOverdrive(dt) {
+  if (state.odOn) {
+    state.odT += dt;
+    if (state.odT >= state.odDur) endOverdrive();
+    return;
+  }
+  if (state.odReady && state.mode === 'play') {
+    const sec = state.sections[state.sectionIdx];
+    const isPeak = sec && (sec.kind === 'drop' || sec.kind === 'chorus') && sec.rel > 0.60;
+    state.odWait += dt;
+    if (isPeak || state.odWait > 15) startOverdrive(sec);
+  }
+}
+
 /* ============================================================
    JUDGING
-   ------------------------------------------------------------
-   Taps are recorded immediately, but the *grade* is only shown
-   the moment the player physically lands on the tile (or, for a
-   late tap, as soon as it is registered). That guarantees a
-   piece of landing text on every single beat.
    ============================================================ */
 function resolveJudge(i) {
   if (i < 0 || !resolvedFlags) return;
@@ -1560,6 +2033,7 @@ function onJudge(kind, offset, weight, idx) {
     state.camShake = Math.max(state.camShake, 0.006);
     showFeedback('MISS', 'miss');
     clearTiming();
+    state.charge = Math.max(0, state.charge - 0.10);
   } else {
     combo++;
     if (combo > maxCombo) maxCombo = combo;
@@ -1582,11 +2056,12 @@ function onJudge(kind, offset, weight, idx) {
 
     const comboMult = 1 + Math.floor(combo / 8) * 0.5;
     const flowMult = state.flowOn ? 2 : 1;
+    const odMult = state.odOn ? 2 : 1;
     const typeMult = 1 + (weight || 0.5) * 0.6;
     const base = kind === 'perfect' ? 300 : kind === 'good' ? 150 : 60;
-    let gained = Math.round(base * comboMult * flowMult * typeMult);
+    let gained = Math.round(base * comboMult * flowMult * odMult * typeMult);
 
-    /* ---- Golden tile: only pre-selected beats can turn gold ---- */
+    /* ---- Golden tile ---- */
     let goldenFresh = false;
     if (kind === 'perfect' && state.level && idx != null && idx >= 0 && idx < state.level.count) {
       const L = state.level;
@@ -1601,7 +2076,7 @@ function onJudge(kind, offset, weight, idx) {
         spawnGoldShockwave(_wavePos);
         state.camShake = Math.max(state.camShake, 0.024);
         state.pulse = Math.max(state.pulse, 1.05);
-        gained += Math.round(500 * comboMult * flowMult);
+        gained += Math.round(500 * comboMult * flowMult * odMult);
       } else {
         spawnMiniShockwave(_wavePos);
         state.camShake = Math.max(state.camShake, 0.010);
@@ -1612,7 +2087,6 @@ function onJudge(kind, offset, weight, idx) {
     score += gained;
     popScore();
 
-    /* ---- Always print the grade, FLOW or not ---- */
     if (kind === 'perfect') {
       showFeedback('PERFECT', 'perfect', { gold: goldenFresh });
       blip(1320, 0.040, 0.09);
@@ -1620,11 +2094,21 @@ function onJudge(kind, offset, weight, idx) {
         blip(1980, 0.035, 0.24);
         setTimeout(() => blip(2640, 0.030, 0.30), 90);
       }
+      addCharge(0.045);
     } else if (kind === 'good') {
       showFeedback('GOOD', 'good');
       blip(990, 0.030, 0.08);
+      addCharge(0.020);
     } else {
       showFeedback('OK', 'ok');
+      addCharge(0.008);
+    }
+
+    /* ---- Combo milestones ---- */
+    if (combo === 10 || combo === 20 || combo === 30 || combo === 50 || combo === 75 || combo === 100) {
+      floatChip(combo + ' STREAK', 'var(--mint)', 68);
+      state.pulse = Math.max(state.pulse, 0.8);
+      blip(1560 + combo * 4, 0.035, 0.22);
     }
 
     if (justEnteredFlow) flowBurst();
@@ -1632,6 +2116,54 @@ function onJudge(kind, offset, weight, idx) {
   updateHUD();
 }
 
+/* ---- Hold completion ---------------------------------------- */
+function awardHold(i) {
+  const L = state.level;
+  if (!L || i < 0 || i >= L.count) return;
+  const dur = L.hold[i];
+  if (!(dur > 0)) return;
+
+  holdCount++;
+  const comboMult = 1 + Math.floor(combo / 8) * 0.5;
+  const odMult = state.odOn ? 2 : 1;
+  const gained = Math.round(220 * (1 + dur) * comboMult * odMult);
+  score += gained;
+  popScore();
+
+  getTilePos(i, state.songTime, _wavePos);
+  spawnShock(_wavePos, theme.mint, { delay: 0, dur: 0.7, from: 0.4, to: 3.2, peak: 0.55, y: 0.3 });
+  burstShards(_wavePos, 10, theme.mint, theme.sky);
+  state.pulse = Math.max(state.pulse, 0.9);
+  state.camShake = Math.max(state.camShake, 0.012);
+
+  floatChip('HELD +' + gained, 'var(--mint)', 62);
+  blip(1188, 0.038, 0.26, 'triangle');
+  setTimeout(() => blip(1584, 0.030, 0.30, 'triangle'), 100);
+  addCharge(0.10);
+  updateHUD();
+}
+
+/* ---- Swipe bonus -------------------------------------------- */
+function awardSwipe(i) {
+  const comboMult = 1 + Math.floor(combo / 8) * 0.5;
+  const odMult = state.odOn ? 2 : 1;
+  const gained = Math.round(180 * comboMult * odMult);
+  score += gained;
+  popScore();
+  swipeCount++;
+
+  getTilePos(i, state.songTime, _wavePos);
+  spawnShock(_wavePos, theme.sky, { delay: 0, dur: 0.55, from: 0.3, to: 2.6, peak: 0.45, y: 0.34 });
+  burstShards(_wavePos, 8, theme.sky, WHITE);
+  state.pulse = Math.max(state.pulse, 0.7);
+
+  floatChip('SWIPE +' + gained, 'var(--sky)', 62);
+  blip(1760, 0.032, 0.14, 'square');
+  addCharge(0.05);
+  updateHUD();
+}
+
+/* ---- Input -------------------------------------------------- */
 function onTap() {
   if (state.mode !== 'play' || !state.level) return;
   const t = state.songTime;
@@ -1658,9 +2190,56 @@ function onTap() {
   judged[best] = kind;
   judgedOffset[best] = offset;
 
-  /* If the landing already happened (late tap), show it right away.
-     Otherwise it will be shown by the landing resolver. */
+  lastTapIdx = best;
+  lastTapTime = t;
+
+  /* start a hold if this tile carries one */
+  const L = state.level;
+  if (L.hold && L.hold[best] > 0) {
+    holdIdx = best;
+  }
+
   if (t >= B[best]) resolveJudge(best);
+}
+
+function onPointerDown(x, y) {
+  ptr = { x, y, t: performance.now() };
+  onTap();
+}
+
+function onPointerUp(x, y) {
+  if (!ptr) return;
+  const dx = x - ptr.x, dy = y - ptr.y;
+  const dist = Math.hypot(dx, dy);
+  const dtms = performance.now() - ptr.t;
+  ptr = null;
+
+  if (state.mode !== 'play' || !state.level) return;
+  const L = state.level;
+
+  /* ---- hold release ---- */
+  if (holdIdx >= 0) {
+    const end = L.beats[holdIdx] + L.hold[holdIdx];
+    if (state.songTime >= end) {
+      /* already auto-awarded in tick — nothing to do */
+      holdIdx = -1;
+    } else {
+      /* released early: no bonus, no punishment, just a soft signal */
+      if (state.songTime > L.beats[holdIdx] + L.hold[holdIdx] * 0.45) {
+        floatChip('…', 'rgba(120,118,150,.7)', 62);
+      }
+      holdIdx = -1;
+    }
+  }
+
+  /* ---- swipe bonus ---- */
+  if (lastTapIdx >= 0 && (state.songTime - lastTapTime) < 0.9 && lastTapIdx < L.count) {
+    const dir = L.swipe[lastTapIdx];
+    if (dir !== 0 && dist > 26 && dtms < 460 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+      if (Math.sign(dx) === dir) awardSwipe(lastTapIdx);
+    }
+    lastTapIdx = -1;
+  }
 }
 
 /* ============================================================
@@ -1701,8 +2280,7 @@ function stopPlayback(fadeMs) {
   const src = state.audioSrc;
   state.audioSrc = null;
   if (src) {
-    const t = fadeMs;
-    setTimeout(() => { try { src.stop(); } catch (e) { } }, t);
+    setTimeout(() => { try { src.stop(); } catch (e) { } }, fadeMs);
   }
 }
 
@@ -1731,6 +2309,26 @@ function readLiveAudio() {
   for (let i = 1; i < 7; i++) s += freqData[i];
   const bass = s / (6 * 255);
   state.live += (bass - state.live) * 0.28;
+}
+
+/* ============================================================
+   SECTION PREP
+   ============================================================ */
+function prepareSections(analysis) {
+  const secs = (analysis && analysis.sections) ? analysis.sections.slice() : [];
+  const baseHue = theme && theme.baseHue != null ? theme.baseHue : 200;
+  secs.forEach((s, k) => {
+    s.inten = SECTION_INTEN[s.kind] != null ? SECTION_INTEN[s.kind] : 0.5;
+    s.color = new THREE.Color().setHSL(
+      wrapHue(baseHue + k * 47) / 360,
+      0.58 + (k % 3) * 0.06,
+      0.60
+    );
+  });
+  state.sections = secs;
+  state.sectionIdx = -1;
+  state.inten = secs.length ? secs[0].inten : 0.5;
+  if (secs.length) showSection(secs[0]);
 }
 
 /* ============================================================
@@ -1771,6 +2369,7 @@ async function startFromBuffer(buffer, precomputed) {
   let types = analysis.types.slice();
   let lows = analysis.low.slice();
   let highs = analysis.high.slice();
+  let holds = analysis.hold ? Array.from(analysis.hold) : new Array(beats.length).fill(0);
 
   const duration = buffer.duration;
 
@@ -1781,6 +2380,7 @@ async function startFromBuffer(buffer, precomputed) {
       beats.push(t); energies.push(0.45);
       weights.push(0.5); types.push('mid');
       lows.push(0.4); highs.push(0.4);
+      holds.push(0);
       t += period;
     }
   }
@@ -1789,6 +2389,7 @@ async function startFromBuffer(buffer, precomputed) {
     const fb = fallbackGrid(duration);
     beats = fb.beats; energies = fb.energies;
     weights = fb.weights; types = fb.types; lows = fb.low; highs = fb.high;
+    holds = fb.hold.slice();
     analysis.bpm = 110;
   }
 
@@ -1796,7 +2397,7 @@ async function startFromBuffer(buffer, precomputed) {
   state.buffer = buffer;
   state.songDuration = duration;
   state.level = buildLevel(beats, energies, analysis.seed || 0xBEA7, {
-    types, weights, low: lows, high: highs
+    types, weights, low: lows, high: highs, hold: holds
   });
   state.pIdx = 0;
   state.squash = 0;
@@ -1808,7 +2409,24 @@ async function startFromBuffer(buffer, precomputed) {
   state.menuTime = 0;
 
   score = 0; combo = 0; maxCombo = 0; goldCount = 0;
+  holdCount = 0; swipeCount = 0;
   counts = { perfect: 0, good: 0, ok: 0, miss: 0 };
+
+  state.charge = 0;
+  state.odReady = false;
+  state.odOn = false;
+  state.odT = 0;
+  state.odDur = 0;
+  state.odWait = 0;
+  state.odPct = -1;
+
+  holdIdx = -1;
+  lastTapIdx = -1;
+  lastTapTime = -999;
+  ptr = null;
+
+  prepareSections(analysis);
+  updateODMeter();
 
   const nBeats = state.level.beats.length;
   judged = new Array(nBeats).fill(null);
@@ -1820,7 +2438,6 @@ async function startFromBuffer(buffer, precomputed) {
   updateHUD();
   clearTiming();
 
-  /* Scenery scattered along the freshly built track */
   deco.build(state.level, analysis.seed || 0xBEA7);
 
   stopPlayback(0);
@@ -1872,6 +2489,10 @@ function endGame() {
   state.frozenTime = state.songTime;
   stopPlayback(1400);
   hudEl.classList.add('hidden');
+  state.odOn = false;
+  state.odReady = false;
+  odWrap.style.opacity = '0';
+  sectionTag.style.opacity = '0';
 
   const total = counts.perfect + counts.good + counts.ok + counts.miss;
   const acc = total ? (counts.perfect * 1 + counts.good * 0.7 + counts.ok * 0.4) / total : 0;
@@ -1884,6 +2505,7 @@ function endGame() {
     <div class="stat"><b style="color:#8a8ab0">${counts.ok}</b>OK</div>
     <div class="stat wide"><b>${maxCombo}</b>BEST COMBO</div>
     <div class="stat wide"><b style="color:#e0a800">${goldCount}</b>GOLDEN TILES</div>
+    <div class="stat wide"><b style="color:#4fb8a0">${holdCount}</b>HOLDS · <b style="color:#4f8ab8">${swipeCount}</b>SWIPES</div>
   `;
   showScreen(resultsEl);
 }
@@ -1897,7 +2519,12 @@ function backToMenu() {
   state.buffer = null;
   state.flow = 0;
   state.flowOn = false;
+  state.odOn = false;
+  state.odReady = false;
+  state.charge = 0;
   flowTag.classList.remove('on');
+  odWrap.style.opacity = '0';
+  sectionTag.style.opacity = '0';
   stopPlayback(200);
   hudEl.classList.add('hidden');
   buildMenuLevel();
@@ -1911,7 +2538,7 @@ async function makeDemoBuffer() {
   const ctx = createAudioContext();
   if (!ctx) throw new Error('No audio');
   const sr = ctx.sampleRate;
-  const DUR = 46, BPM = 88;
+  const DUR = 52, BPM = 88;
   const spb = 60 / BPM;
 
   const off = new OfflineAudioContext(2, Math.floor(sr * DUR), sr);
@@ -1984,17 +2611,19 @@ async function makeDemoBuffer() {
   for (let b = 0; b < bars; b++) {
     const bt = t0 + b * barLen;
     const ch = prog[b % prog.length];
-    pad(bt, barLen, ch.chord, 0.085);
+    const quiet = b < 2 || (b >= bars - 2);
+    pad(bt, barLen, ch.chord, quiet ? 0.05 : 0.09);
+
     for (let k = 0; k < 4; k++) {
       const t = bt + k * spb;
-      kick(t, k === 0 ? 0.92 : 0.68);
-      bass(t, spb * 0.9, ch.root / 2, 0.22);
-      if (k % 2 === 1) hat(t, 0.09);
-      hat(t + spb * 0.5, 0.045);
+      kick(t, quiet ? 0.5 : (k === 0 ? 0.92 : 0.68));
+      if (!quiet || k === 0) bass(t, spb * 0.9, ch.root / 2, quiet ? 0.14 : 0.22);
+      if (k % 2 === 1) hat(t, quiet ? 0.05 : 0.09);
+      if (!quiet) hat(t + spb * 0.5, 0.045);
     }
   }
 
-  return await off.startRendering();
+  return await off.await ? await off.startRendering() : await off.startRendering();
 }
 
 /* ============================================================
@@ -2079,8 +2708,16 @@ $('back').addEventListener('click', backToMenu);
 
 window.addEventListener('pointerdown', (e) => {
   if (e.target.closest('button, label, input, a')) return;
-  onTap();
+  onPointerDown(e.clientX, e.clientY);
 }, { passive: true });
+
+window.addEventListener('pointerup', (e) => {
+  onPointerUp(e.clientX, e.clientY);
+}, { passive: true });
+
+window.addEventListener('pointercancel', () => {
+  if (ptr) onPointerUp(ptr.x, ptr.y);
+});
 
 window.addEventListener('contextmenu', e => e.preventDefault());
 window.addEventListener('resize', onResize);
@@ -2145,7 +2782,25 @@ function tick(now) {
 
     readLiveAudio();
 
-    /* --- window closed with no tap → miss --- */
+    /* ---- section tracking ---- */
+    {
+      const secs = state.sections;
+      let si = -1;
+      if (secs && secs.length) {
+        for (let k = 0; k < secs.length; k++) {
+          if (t >= secs[k].t && t < secs[k].end) { si = k; break; }
+        }
+        if (si < 0) si = t < secs[0].t ? 0 : secs.length - 1;
+      }
+      if (si !== state.sectionIdx) {
+        state.sectionIdx = si;
+        if (secs && secs[si]) showSection(secs[si]);
+      }
+      const targetInten = (secs && secs[si]) ? secs[si].inten : 0.45;
+      state.inten += (targetInten - state.inten) * (1 - Math.exp(-dt * 1.5));
+    }
+
+    /* ---- window closed with no tap → miss ---- */
     while (judgePtr < L.beats.length && t > L.beats[judgePtr] + timingWindow(judgePtr)) {
       if (!judged[judgePtr]) {
         if (isRequiredBeat(judgePtr)) {
@@ -2160,7 +2815,16 @@ function tick(now) {
       judgePtr++;
     }
 
-    /* --- touchdown --- */
+    /* ---- hold completion ---- */
+    if (holdIdx >= 0) {
+      const end = L.beats[holdIdx] + L.hold[holdIdx];
+      if (t >= end) {
+        awardHold(holdIdx);
+        holdIdx = -1;
+      }
+    }
+
+    /* ---- touchdown ---- */
     while (state.pIdx + 1 < L.beats.length && t >= L.beats[state.pIdx + 1]) {
       state.pIdx++;
       const ty = L.types[state.pIdx];
@@ -2172,9 +2836,12 @@ function tick(now) {
       const kind = judged[state.pIdx];
       spawnRing(_tmpA, kind === 'perfect' || kind === 'good' || ty === 'bass', L.colors[state.pIdx]);
       state.camShake = Math.max(state.camShake, ty === 'bass' ? 0.008 : 0.004);
+      if (state.odOn) {
+        spawnShock(_tmpA, WHITE, { delay: 0, dur: 0.4, from: 0.25, to: 1.7, peak: 0.28, y: 0.3 });
+      }
     }
 
-    /* --- show the grade exactly on landing --- */
+    /* ---- show the grade exactly on landing ---- */
     while (resolvePtr < L.beats.length && t >= L.beats[resolvePtr]) {
       resolveJudge(resolvePtr);
       resolvePtr++;
@@ -2182,13 +2849,22 @@ function tick(now) {
 
     updatePlayerTransform(t, dt);
     updateTiles(t, dt);
+    updateHoldBars(t);
+    updateArrows(t);
     updateTrail(dt);
     updateCueRing();
+    updateOverdrive(dt);
 
     if (t > L.beats[L.beats.length - 1] + 2.8) endGame();
   } else if (state.mode === 'results') {
     t = state.frozenTime;
-    if (state.level) { updateTiles(t, dt); updatePlayerTransform(t, dt); updateTrail(dt); }
+    if (state.level) {
+      updateTiles(t, dt);
+      updatePlayerTransform(t, dt);
+      updateHoldBars(t);
+      updateArrows(t);
+      updateTrail(dt);
+    }
     cueRing.visible = false;
   } else {
     if (state.level) updateTiles(worldTime, dt);
@@ -2199,6 +2875,7 @@ function tick(now) {
   updateShocks(dt);
   updateShards(dt);
   updateFlow(dt);
+  updateODMeter();
 
   /* Scenery */
   deco.update(worldTime, dt, camTarget, state.pulse);
@@ -2207,11 +2884,11 @@ function tick(now) {
   state.landKick *= Math.exp(-dt * 7);
 
   particleGroup.position.set(camTarget.x * 0.6, 0, camTarget.z * 0.6);
-  const pBoost = 1 + state.pulse * 0.7 + state.live * 0.5;
+  const pBoost = 1 + state.pulse * 0.7 + state.live * 0.5 + state.inten * 0.4;
   for (const p of particles) {
     p.position.y = p.userData.baseY + Math.sin(worldTime * p.userData.speed + p.userData.phase) * p.userData.amp;
     p.position.x += Math.sin(worldTime * 0.2 + p.userData.phase) * dt * 0.12;
-    p.material.opacity = Math.min(0.45, p.userData.baseOpacity * pBoost);
+    p.material.opacity = Math.min(0.5, p.userData.baseOpacity * pBoost);
   }
 
   /* ---- Distant spectrum silhouette ---- */
@@ -2228,7 +2905,7 @@ function tick(now) {
         target = 0.10 + 0.08 * Math.sin(worldTime * 1.4 + i * 0.5);
       }
       m.userData.h += (target - m.userData.h) * 0.26;
-      m.scale.y = 0.20 + m.userData.h * 4.2;
+      m.scale.y = 0.20 + m.userData.h * 4.2 * (0.8 + state.inten * 0.6);
       m.material.opacity = 0.18 + m.userData.h * 0.35;
     }
   }
@@ -2237,12 +2914,25 @@ function tick(now) {
   grid.position.z = Math.round(camTarget.z / 6) * 6;
   grid.material.opacity = 0.055 + state.pulse * 0.03 + state.live * 0.03;
 
-  const energy = state.pulse + state.live * 0.5;
-  hemiLight.intensity = 1.9 + energy * 0.40;
-  keyLight.intensity = 2.05 + energy * 0.45;
-  rimLight.intensity = 0.7 + energy * 0.55 + (state.flowOn ? 0.35 : 0);
+  /* ---- Song-structure-driven lighting ---- */
+  const secNow = state.sections[state.sectionIdx];
+  if (secNow && secNow.color) _secCol.copy(secNow.color);
+  else _secCol.copy(theme.accent);
+
+  const energy = state.pulse + state.live * 0.5 + state.inten * 0.25;
+  hemiLight.intensity = 1.85 + energy * 0.40 + (state.odOn ? 0.30 : 0);
+  keyLight.intensity = 2.00 + energy * 0.45 + (state.odOn ? 0.35 : 0);
+  rimLight.intensity = 0.65 + energy * 0.55 + (state.flowOn ? 0.35 : 0) + (state.odOn ? 0.50 : 0);
+
+  keyLight.color.copy(WHITE).lerp(_secCol, 0.22 * state.inten);
+  rimLight.color.copy(theme.accent).lerp(_secCol, 0.55 * state.inten);
+  hemiLight.groundColor.copy(theme.paper2).lerp(_secCol, 0.12 * state.inten);
+
+  scene.fog.color.copy(theme.bg).lerp(_secCol, 0.10 * state.inten);
+  scene.backgroundIntensity = 0.94 + state.inten * 0.12 + energy * 0.05 + (state.odOn ? 0.10 : 0);
+
   scene.fog.near = 30 + energy * 3;
-  scene.fog.far = 90 + energy * 8;
+  scene.fog.far = 90 + energy * 8 + state.inten * 10;
 
   if (state.level) {
     const k = 1 - Math.exp(-dt * 3.6);
@@ -2254,6 +2944,9 @@ function tick(now) {
     _tmpA.copy(camTarget).add(CAM_OFFSET);
     _tmpA.y += vib * 0.35 - state.landKick * 0.10;
     _tmpA.z -= vib * 0.25;
+    /* songs that are loud pull the camera closer */
+    const pushIn = state.inten * 0.85 + (state.odOn ? 1.1 : 0);
+    _tmpA.sub(camTarget).multiplyScalar(1 - pushIn * 0.045).add(camTarget);
 
     if (state.mode === 'menu' || state.mode === 'loading') {
       _tmpA.x += Math.sin(worldTime * 0.22) * 0.85;
@@ -2268,7 +2961,8 @@ function tick(now) {
     state.roll += (rollTarget - state.roll) * (1 - Math.exp(-dt * 3.2));
 
     const fovTarget = BASE_FOV - vib * 2.0 - state.live * 0.9
-      - Math.min(3.0, combo * 0.05) - (state.flowOn ? 1.4 : 0);
+      - Math.min(3.0, combo * 0.05) - (state.flowOn ? 1.4 : 0)
+      - state.inten * 1.6 - (state.odOn ? 3.2 : 0);
     camera.fov += (fovTarget - camera.fov) * (1 - Math.exp(-dt * 6));
     camera.updateProjectionMatrix();
 
