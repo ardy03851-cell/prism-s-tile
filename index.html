@@ -120,77 +120,157 @@ const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
 const wrapHue = h => ((h % 360) + 360) % 360;
 
 /* ============================================================
-   PRESET SONGS
+   PRESET SONGS — AUTOMATIC DISCOVERY
    ------------------------------------------------------------
-   Put your mp3 files inside the  presongs/  folder next to
-   this index.html, then list them in ONE of these two places:
+   Just drop an .mp3 (or m4a / wav / ogg / aac / aiff / caf)
+   into the  presongs/  folder next to this file. That's it.
+   The list is discovered automatically, in three tiers:
 
-   OPTION A — create  presongs/songs.json  containing either an
-   array or an object with a "songs" array:
+     1. Directory listing of  presongs/       ← the normal case
+        (works with Python http.server, npx serve,
+         http-server, nginx autoindex, Apache +Indexes, etc.)
 
-     [
-       { "title": "Neon Drift", "artist": "Prism", "file": "presongs/neon-drift.mp3" },
-       { "title": "Glass River", "artist": "Prism", "file": "presongs/glass-river.mp3" }
-     ]
+     2. presongs/songs.json  if present      ← optional metadata
+        Accepts either an array or { "songs": [...] }.
+        Each entry: { title, artist, file }  — file is required.
 
-     ...or...
+     3. The PRESET_SONGS array below         ← last resort
+        Only used if directory listing fails AND no JSON.
 
-     { "songs": [ { "title": "...", "artist": "...", "file": "presongs/....mp3" } ] }
-
-   OPTION B — just edit the PRESET_SONGS array below.
-              Anything you put here overrides the JSON file.
+   Filenames are pretty-printed for the menu:
+       01-neon_drift.mp3     → "01 Neon Drift"
+       Prism - Glass River   → artist "Prism", title "Glass River"
    ============================================================ */
 
-/* ⬇️ EDIT ME — easy hardcoded list (leave empty to use songs.json) */
+const PRESET_DIR = 'presongs/';
+const PRESET_MANIFEST = PRESET_DIR + 'songs.json';
+const PRESET_EXT = /\.(mp3|m4a|aac|wav|aif|aiff|ogg|oga|caf)$/i;
+
+/* Last-resort manual list — leave empty and rely on auto-discovery. */
 const PRESET_SONGS = [
   // { title: 'Neon Drift', artist: 'Prism', file: 'presongs/neon-drift.mp3' },
 ];
 
-const PRESET_MANIFEST = 'presongs/songs.json';
-const PRESET_EXT = /\.(mp3|m4a|aac|wav|aif|aiff|ogg|oga|caf)$/i;
+let presetCache = [];
 
-let presetCache = [];       // normalized list of { title, artist, file }
+/* Turn "01-neon_drift" into "01 Neon Drift" */
+function prettifyBase(base) {
+  return base
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')   // split camelCase
+    .replace(/[-_]+/g, ' ')                   // dashes / underscores → spaces
+    .replace(/\s+/g, ' ')                     // collapse whitespace
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());  // title-case
+}
 
-function normalizePresetEntry(entry, i) {
+/* Best-effort title / artist from a filename. */
+function parseFilename(file) {
+  const base = String(file).split('/').pop().replace(PRESET_EXT, '');
+  const dash = base.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+  if (dash) {
+    const artist = prettifyBase(dash[1]);
+    const title = prettifyBase(dash[2]);
+    if (artist && title) return { artist, title };
+  }
+  return { artist: 'Preset', title: prettifyBase(base) || base };
+}
+
+function normalizePresetEntry(entry) {
   if (!entry) return null;
   if (typeof entry === 'string') {
     const file = entry;
-    const base = file.split('/').pop().replace(PRESET_EXT, '');
-    return {
-      title: base.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-      artist: 'Preset',
-      file
-    };
+    const meta = parseFilename(file);
+    return { title: meta.title, artist: meta.artist, file };
   }
   const file = entry.file || entry.src || entry.url;
   if (!file) return null;
-  const base = file.split('/').pop().replace(PRESET_EXT, '');
+  const meta = parseFilename(file);
   return {
-    title: entry.title || base.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-    artist: entry.artist || entry.by || 'Preset',
+    title: entry.title || meta.title,
+    artist: entry.artist || entry.by || meta.artist,
     file
   };
 }
 
-async function loadPresetManifest() {
-  // Option B wins if it has content
-  if (Array.isArray(PRESET_SONGS) && PRESET_SONGS.length) {
-    return PRESET_SONGS.map(normalizePresetEntry).filter(Boolean);
+/* ---- Tier 1: parse a directory listing of presongs/ ---- */
+async function discoverFromDirectory() {
+  let res;
+  try {
+    res = await fetch(PRESET_DIR, { cache: 'no-cache' });
+  } catch (e) {
+    return null; // file:// or offline — try next tier
+  }
+  if (!res.ok) return null;
+
+  let html;
+  try { html = await res.text(); }
+  catch (e) { return null; }
+
+  const found = new Set();
+  const hrefRe = /href\s*=\s*["']([^"']+)["']/gi;
+  let m;
+  while ((m = hrefRe.exec(html)) !== null) {
+    let href = m[1];
+    // strip query + fragment
+    href = href.split('#')[0].split('?')[0];
+    if (!href) continue;
+    // decode percent-encoding so "My%20Song.mp3" → "My Song.mp3"
+    let decoded = href;
+    try { decoded = decodeURIComponent(href); } catch (e) { /* keep raw */ }
+    // filename only
+    const parts = decoded.split('/');
+    const base = parts[parts.length - 1];
+    if (!base || base === '..' || base === '.') continue;
+    if (!PRESET_EXT.test(base)) continue;
+    found.add(PRESET_DIR + base);
   }
 
-  // Option A — try the JSON manifest
+  if (found.size === 0) return null;
+  return Array.from(found);
+}
+
+/* ---- Tier 2: presongs/songs.json ---- */
+async function discoverFromManifest() {
   try {
     const res = await fetch(PRESET_MANIFEST, { cache: 'no-cache' });
-    if (res.ok) {
-      const data = await res.json();
-      const arr = Array.isArray(data) ? data : (data && Array.isArray(data.songs) ? data.songs : null);
-      if (arr) {
-        return arr.map(normalizePresetEntry).filter(Boolean);
-      }
-    }
+    if (!res.ok) return null;
+    const data = await res.json();
+    const arr = Array.isArray(data)
+      ? data
+      : (data && Array.isArray(data.songs) ? data.songs : null);
+    if (!arr || !arr.length) return null;
+    return arr.map(normalizePresetEntry).filter(Boolean);
   } catch (e) {
-    // File:// or missing manifest — silent.
+    return null;
   }
+}
+
+/* ---- Tier 3: hardcoded PRESET_SONGS ---- */
+function discoverFromHardcoded() {
+  if (!Array.isArray(PRESET_SONGS) || !PRESET_SONGS.length) return null;
+  return PRESET_SONGS.map(normalizePresetEntry).filter(Boolean);
+}
+
+/* ---- Master discovery ---- */
+async function discoverPresetSongs() {
+  // 1. directory listing → auto-discovery, no config needed
+  const files = await discoverFromDirectory();
+  if (files && files.length) {
+    const list = files.map(f => normalizePresetEntry(f)).filter(Boolean);
+    list.sort((a, b) =>
+      a.file.localeCompare(b.file, undefined, { numeric: true, sensitivity: 'base' })
+    );
+    return list;
+  }
+
+  // 2. optional manifest with custom metadata
+  const manifest = await discoverFromManifest();
+  if (manifest && manifest.length) return manifest;
+
+  // 3. hardcoded fallback
+  const hard = discoverFromHardcoded();
+  if (hard && hard.length) return hard;
+
   return [];
 }
 
@@ -210,9 +290,11 @@ function renderPresetList(list) {
         <div class="preset-empty-icon" aria-hidden="true">♪</div>
         <div class="preset-empty-title">No songs in the folder</div>
         <div class="preset-empty-body">
-          Drop your mp3 files into <code>presongs/</code> and list them in
-          <code>presongs/songs.json</code> — or add them to the
-          <code>PRESET_SONGS</code> array in <code>index.html</code>.
+          Drop your audio files into <code>presongs/</code> and refresh —
+          mp3, m4a, wav, ogg, aac, aiff and caf all work.<br><br>
+          If nothing shows up, your server may hide directory listings.
+          In that case add a <code>presongs/songs.json</code> with a
+          <code>[{ "file": "presongs/song.mp3" }]</code> array.
         </div>
       </div>
     `;
@@ -261,13 +343,13 @@ function escapeHtml(str) {
 }
 
 async function openPresets() {
-  state.mode = 'menu';   // keep the background animating
+  state.mode = 'menu';
   showScreen(presetsEl);
-  presetListEl.innerHTML = '<div class="preset-loading">Loading…</div>';
+  presetListEl.innerHTML = '<div class="preset-loading">Loading</div>';
   presetSubEl.textContent = 'Looking for songs';
   presetHeaderCountEl.textContent = '…';
 
-  const list = await loadPresetManifest();
+  const list = await discoverPresetSongs();
   renderPresetList(list);
 }
 
@@ -1273,7 +1355,6 @@ function classifyKinds(beatTimes, energies, types, weights, lowN, highN, sustain
 
   if (n < 8) return { kinds, holdEnd, absorbed };
 
-  /* ---------------- HOLDS ---------------- */
   const maxHolds = clamp(Math.round(n / 26), 1, 6);
   let holds = 0;
   let i = 2;
@@ -1301,7 +1382,6 @@ function classifyKinds(beatTimes, energies, types, weights, lowN, highN, sustain
     i++;
   }
 
-  /* ---------------- MUTES ---------------- */
   const maxMutes = clamp(Math.round(n / 34), 1, 4);
   let mutes = 0;
   i = 3;
@@ -1324,7 +1404,6 @@ function classifyKinds(beatTimes, energies, types, weights, lowN, highN, sustain
     i++;
   }
 
-  /* ---------------- GHOSTS ---------------- */
   for (let k = 2; k < n - 1; k++) {
     if (absorbed[k] || kinds[k] !== 'beat') continue;
     const gapA = beatTimes[k] - beatTimes[k - 1];
@@ -1333,7 +1412,6 @@ function classifyKinds(beatTimes, energies, types, weights, lowN, highN, sustain
     if (types[k] === 'hat' && highN[k] > 0.40 && gap < 0.34) kinds[k] = 'ghost';
   }
 
-  /* ---------------- PRISM ---------------- */
   const PHRASE = 16;
   let prismCount = 0;
   for (let b = PHRASE; b + PHRASE <= n && prismCount < 6; b += PHRASE) {
@@ -3041,8 +3119,9 @@ applyTheme(makeTheme(0xBEA7));
 buildMenuLevel();
 showScreen(menuEl);
 
-/* Preload the preset list in the background so the badge is populated */
-loadPresetManifest().then(list => {
+/* Populate the preset count badge in the background so the menu
+   immediately reflects what's in the presongs/ folder. */
+discoverPresetSongs().then(list => {
   presetsCountEl.textContent = list.length;
   presetsCountEl.classList.toggle('empty', list.length === 0);
 });
