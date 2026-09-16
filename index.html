@@ -39,13 +39,38 @@
           the track does.</p>
       </div>
       <div class="panel panel-side">
-        <label class="btn primary btn-tab" for="file">Choose a song</label>
+        <button class="btn primary btn-tab" id="presetsBtn">
+          <span class="btn-icon" aria-hidden="true">♪</span>
+          Preset songs
+          <span class="btn-badge" id="presetsCount">0</span>
+        </button>
+        <label class="btn ghost btn-tab" for="file">Choose a song</label>
         <input id="file" type="file"
           accept="audio/*,.mp3,.m4a,.aac,.wav,.aif,.aiff,.ogg,.oga,.caf" />
         <button class="btn ghost btn-tab" id="demo">Play the demo (precoded music for training)</button>
         <div class="chips">
           <span class="chip">Headphones recommended</span>
           <span class="chip">MP3 · M4A · WAV</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="presets" class="screen hidden">
+      <div class="card preset-card">
+        <div class="preset-header">
+          <div class="preset-heading">
+            <h2>Preset songs</h2>
+            <p class="preset-sub" id="presetSub">Pick a track from your collection</p>
+          </div>
+          <div class="preset-count" id="presetHeaderCount">—</div>
+        </div>
+
+        <div class="preset-list" id="presetList" role="list">
+          <!-- filled by JS -->
+        </div>
+
+        <div class="preset-actions">
+          <button class="btn ghost" id="presetsBack">Back</button>
         </div>
       </div>
     </div>
@@ -80,15 +105,246 @@ import { createDecoSystem } from './deco.js';
    ============================================================ */
 const $ = id => document.getElementById(id);
 const menuEl = $('menu'), loadingEl = $('loading'), resultsEl = $('results');
+const presetsEl = $('presets');
 const hudEl = $('hud'), scoreEl = $('score'), comboEl = $('combo');
 const bpmTag = $('bpmTag'), feedbackEl = $('feedback');
 const barFill = $('barFill'), loadTitle = $('loadTitle'), loadSub = $('loadSub');
 const tapHint = $('tapHint'), fileInput = $('file');
 const timingEl = $('timing'), timingMark = $('timingMark'), flowTag = $('flowTag');
+const presetListEl = $('presetList'), presetSubEl = $('presetSub');
+const presetsCountEl = $('presetsCount'), presetHeaderCountEl = $('presetHeaderCount');
+const presetsBtn = $('presetsBtn'), presetsBackBtn = $('presetsBack');
 
 const nextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
 const wrapHue = h => ((h % 360) + 360) % 360;
+
+/* ============================================================
+   PRESET SONGS
+   ------------------------------------------------------------
+   Put your mp3 files inside the  presongs/  folder next to
+   this index.html, then list them in ONE of these two places:
+
+   OPTION A — create  presongs/songs.json  containing either an
+   array or an object with a "songs" array:
+
+     [
+       { "title": "Neon Drift", "artist": "Prism", "file": "presongs/neon-drift.mp3" },
+       { "title": "Glass River", "artist": "Prism", "file": "presongs/glass-river.mp3" }
+     ]
+
+     ...or...
+
+     { "songs": [ { "title": "...", "artist": "...", "file": "presongs/....mp3" } ] }
+
+   OPTION B — just edit the PRESET_SONGS array below.
+              Anything you put here overrides the JSON file.
+   ============================================================ */
+
+/* ⬇️ EDIT ME — easy hardcoded list (leave empty to use songs.json) */
+const PRESET_SONGS = [
+  // { title: 'Neon Drift', artist: 'Prism', file: 'presongs/neon-drift.mp3' },
+];
+
+const PRESET_MANIFEST = 'presongs/songs.json';
+const PRESET_EXT = /\.(mp3|m4a|aac|wav|aif|aiff|ogg|oga|caf)$/i;
+
+let presetCache = [];       // normalized list of { title, artist, file }
+
+function normalizePresetEntry(entry, i) {
+  if (!entry) return null;
+  if (typeof entry === 'string') {
+    const file = entry;
+    const base = file.split('/').pop().replace(PRESET_EXT, '');
+    return {
+      title: base.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+      artist: 'Preset',
+      file
+    };
+  }
+  const file = entry.file || entry.src || entry.url;
+  if (!file) return null;
+  const base = file.split('/').pop().replace(PRESET_EXT, '');
+  return {
+    title: entry.title || base.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    artist: entry.artist || entry.by || 'Preset',
+    file
+  };
+}
+
+async function loadPresetManifest() {
+  // Option B wins if it has content
+  if (Array.isArray(PRESET_SONGS) && PRESET_SONGS.length) {
+    return PRESET_SONGS.map(normalizePresetEntry).filter(Boolean);
+  }
+
+  // Option A — try the JSON manifest
+  try {
+    const res = await fetch(PRESET_MANIFEST, { cache: 'no-cache' });
+    if (res.ok) {
+      const data = await res.json();
+      const arr = Array.isArray(data) ? data : (data && Array.isArray(data.songs) ? data.songs : null);
+      if (arr) {
+        return arr.map(normalizePresetEntry).filter(Boolean);
+      }
+    }
+  } catch (e) {
+    // File:// or missing manifest — silent.
+  }
+  return [];
+}
+
+function renderPresetList(list) {
+  presetCache = list;
+  presetListEl.innerHTML = '';
+
+  const n = list.length;
+  presetsCountEl.textContent = n;
+  presetsCountEl.classList.toggle('empty', n === 0);
+  presetHeaderCountEl.textContent = n === 0 ? '—' : (n + (n === 1 ? ' track' : ' tracks'));
+
+  if (n === 0) {
+    presetSubEl.textContent = 'No presets found yet';
+    presetListEl.innerHTML = `
+      <div class="preset-empty">
+        <div class="preset-empty-icon" aria-hidden="true">♪</div>
+        <div class="preset-empty-title">No songs in the folder</div>
+        <div class="preset-empty-body">
+          Drop your mp3 files into <code>presongs/</code> and list them in
+          <code>presongs/songs.json</code> — or add them to the
+          <code>PRESET_SONGS</code> array in <code>index.html</code>.
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  presetSubEl.textContent = 'Pick a track from your collection';
+
+  list.forEach((song, i) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'preset-item';
+    item.dataset.file = song.file;
+    item.setAttribute('role', 'listitem');
+
+    const num = String(i + 1).padStart(2, '0');
+
+    item.innerHTML = `
+      <span class="preset-num">${num}</span>
+      <span class="preset-info">
+        <span class="preset-title">${escapeHtml(song.title)}</span>
+        <span class="preset-artist">${escapeHtml(song.artist || 'Preset')}</span>
+      </span>
+      <span class="preset-file">${escapeHtml(shortFile(song.file))}</span>
+      <span class="preset-play" aria-hidden="true">▶</span>
+    `;
+
+    item.addEventListener('click', () => playPreset(song, item));
+    presetListEl.appendChild(item);
+  });
+}
+
+function shortFile(path) {
+  if (!path) return '';
+  const parts = String(path).split('/');
+  return parts[parts.length - 1];
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function openPresets() {
+  state.mode = 'menu';   // keep the background animating
+  showScreen(presetsEl);
+  presetListEl.innerHTML = '<div class="preset-loading">Loading…</div>';
+  presetSubEl.textContent = 'Looking for songs';
+  presetHeaderCountEl.textContent = '…';
+
+  const list = await loadPresetManifest();
+  renderPresetList(list);
+}
+
+async function playPreset(song, el) {
+  if (state.mode === 'play') return;
+  if (el) el.classList.add('active');
+
+  await unlockAudio();
+  const ctx = await ensureRunning();
+  if (!ctx) {
+    if (el) el.classList.remove('active');
+    loadTitle.textContent = 'Audio unavailable';
+    loadSub.textContent = 'Tap the screen and try again.';
+    showScreen(loadingEl);
+    state.mode = 'loading';
+    setTimeout(() => { showScreen(presetsEl); state.mode = 'menu'; }, 2200);
+    return;
+  }
+
+  showScreen(loadingEl);
+  hudEl.classList.add('hidden');
+  state.mode = 'loading';
+  showLoading('Loading', `Reading "${song.title}"`, 0.05);
+  await nextFrame();
+
+  try {
+    let raw = null;
+
+    // Try fetch first (works when served over http/https)
+    try {
+      const res = await fetch(song.file, { cache: 'no-cache' });
+      if (res.ok) {
+        raw = await res.arrayBuffer();
+      } else {
+        throw new Error('HTTP ' + res.status);
+      }
+    } catch (fetchErr) {
+      // Fallback: XHR (helps with some local dev setups)
+      try {
+        raw = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('GET', song.file, true);
+          xhr.responseType = 'arraybuffer';
+          xhr.onload = () => {
+            if (xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300)) {
+              resolve(xhr.response);
+            } else {
+              reject(new Error('XHR ' + xhr.status));
+            }
+          };
+          xhr.onerror = () => reject(new Error('XHR network error'));
+          xhr.send();
+        });
+      } catch (xhrErr) {
+        throw fetchErr;
+      }
+    }
+
+    if (!raw || !raw.byteLength) throw new Error('Empty response');
+
+    showLoading('Decoding', 'Unpacking the audio…', 0.14);
+    await nextFrame();
+
+    const buf = await ctx.decodeAudioData(raw.slice(0));
+    if (!buf || !buf.length) throw new Error('Empty audio buffer');
+
+    if (el) el.classList.remove('active');
+    await startFromBuffer(buf);
+  } catch (err) {
+    console.error('Preset load error:', err);
+    if (el) el.classList.remove('active');
+    loadTitle.textContent = 'Could not load that song';
+    loadSub.textContent = 'Check that the file exists in presongs/ and that you are serving the page (not opening it as file://).';
+    barFill.style.width = '0%';
+    setTimeout(() => { showScreen(presetsEl); state.mode = 'menu'; }, 2800);
+  }
+}
 
 /* ============================================================
    THREE
@@ -461,7 +717,6 @@ function spawnGoldShockwave(pos) {
   burstShards(pos, 22);
 }
 
-/* Prism burst — the phrase-level payoff */
 function spawnPrismShockwave(pos) {
   spawnShock(pos, PRISM_A, { delay: 0, dur: 0.60, from: 0.30, to: 4.4, peak: 0.95, y: 0.30 });
   spawnShock(pos, PRISM_B, { delay: 0.05, dur: 1.00, from: 0.20, to: 6.0, peak: 0.60, y: 0.32, rise: 0.7 });
@@ -470,13 +725,11 @@ function spawnPrismShockwave(pos) {
   burstShards(pos, 30, PRISM_A, PRISM_B);
 }
 
-/* Dark ripple for a broken rest */
 function spawnMuteRipple(pos) {
   spawnShock(pos, MUTE_INK, { delay: 0, dur: 0.55, from: 0.9, to: 0.2, peak: 0.55, y: 0.30 });
   spawnShock(pos, new THREE.Color(0x8f4a5a), { delay: 0.02, dur: 0.7, from: 0.2, to: 2.4, peak: 0.30, y: 0.30 });
 }
 
-/* Soft "held" ripple for a correct rest */
 function spawnRestRipple(pos) {
   spawnShock(pos, theme.ink, { delay: 0, dur: 0.9, from: 0.2, to: 3.2, peak: 0.22, y: 0.30 });
   spawnShock(pos, theme.mint, { delay: 0.05, dur: 0.8, from: 0.15, to: 2.2, peak: 0.16, y: 0.31 });
@@ -703,8 +956,6 @@ function combineBands(low, mid, high) {
   }
   if (mx > 1e-7) for (let i = 0; i < n; i++) comb[i] /= mx;
 
-  /* Sustain envelope — distinguishes a held bass note from a
-     repeated staccato one. This is what drives HOLD tiles. */
   let emax = 1e-6;
   for (let i = 0; i < n; i++) if (low.env[i] > emax) emax = low.env[i];
   const sus = new Float32Array(n);
@@ -1013,16 +1264,6 @@ function seedFrom(nov, frames, bpm, duration) {
 
 /* ============================================================
    TILE KIND CLASSIFICATION
-   ------------------------------------------------------------
-   Every mechanic is derived from the music itself:
-
-   HOLD  ← a bass note that *sustains* under the following beats
-           (strong low onset, then low novelty but high envelope)
-   MUTE  ← a genuine drop: several beats in a row with almost no
-           energy in any band. Do not tap. Read the silence.
-   GHOST ← fast hi-hat runs. Optional. Free points, no penalty.
-   PRISM ← the single strongest beat of each 16-beat phrase.
-           Land it perfect to trigger a Prism Rush.
    ============================================================ */
 function classifyKinds(beatTimes, energies, types, weights, lowN, highN, sustain, seed) {
   const n = beatTimes.length;
@@ -1043,8 +1284,8 @@ function classifyKinds(beatTimes, energies, types, weights, lowN, highN, sustain
       while (j + 1 < n - 1 && (j - i) < 3) {
         const gap = beatTimes[j + 1] - beatTimes[j];
         if (gap > 0.95) break;
-        if (lowN[j + 1] > lowN[i] * 0.48) break;      // a new hit → not sustained
-        if (sustain[j + 1] < sustain[i] * 0.62) break; // note died away
+        if (lowN[j + 1] > lowN[i] * 0.48) break;
+        if (sustain[j + 1] < sustain[i] * 0.62) break;
         if (absorbed[j + 1]) break;
         j++;
       }
@@ -1127,7 +1368,6 @@ function buildLevel(beatTimes, energies, seed, extra) {
   const highs = (extra && extra.high) || new Array(n).fill(0.4);
   const sustain = (extra && extra.sustain) || new Array(n).fill(0.3);
 
-  /* --- classify mechanics from the audio --- */
   const cls = classifyKinds(beatTimes, energies, types, weights, lows, highs, sustain, seed);
   const kinds = cls.kinds;
   const holdEnd = cls.holdEnd;
@@ -1191,7 +1431,6 @@ function buildLevel(beatTimes, energies, seed, extra) {
     rot[i] = (rnd() - 0.5) * 0.55 + (type === 'hat' ? 0.22 : 0);
   }
 
-  /* --- hold pad geometry (straight ribbon from i to j) --- */
   const padLen = new Float32Array(n);
   const padYaw = new Float32Array(n);
   const padPitch = new Float32Array(n);
@@ -1213,10 +1452,6 @@ function buildLevel(beatTimes, energies, seed, extra) {
     padMidZ[i] = (z[i] + z[j]) * 0.5;
   }
 
-  /* ==========================================================
-     GOLDEN CANDIDATES — the strongest musical moments, kept
-     well apart, never on a tile that already has a mechanic.
-     ========================================================== */
   const golden = new Uint8Array(n);
   const goldenT = new Float32Array(n).fill(-1);
   const goldCand = new Uint8Array(n);
@@ -1283,7 +1518,7 @@ const state = {
   flow: 0,
   flowOn: false,
   landKick: 0,
-  rush: 0,          // PRISM RUSH seconds remaining
+  rush: 0,
   rushHue: 0,
   lastAnalysis: null
 };
@@ -1313,7 +1548,6 @@ function getTilePos(i, t, out) {
   return out;
 }
 
-/* Index of the tile the player leaves THIS tile for. */
 function nextTile(i) {
   const L = state.level;
   if (!L) return i + 1;
@@ -1321,14 +1555,12 @@ function nextTile(i) {
   return (j >= 0) ? j + 1 : i + 1;
 }
 
-/* Time at which a beat's grade should pop. */
 function showTime(i) {
   const L = state.level;
   const j = L.holdEnd[i];
   return j >= 0 ? L.beats[j] : L.beats[i];
 }
 
-/* Time after which an un-judged beat is a miss. */
 function deadline(i) {
   return showTime(i) + timingWindow(i);
 }
@@ -1393,7 +1625,6 @@ function updatePlayerTransform(t, dt) {
   const i = state.pIdx;
   const ni = nextTile(i);
 
-  /* Current "home" position — slides along a hold pad. */
   if (L.holdEnd[i] >= 0) {
     const j = L.holdEnd[i];
     const span = Math.max(0.001, B[j] - B[i]);
@@ -1408,8 +1639,6 @@ function updatePlayerTransform(t, dt) {
   let p = 0, airborne = 0;
 
   if (ni < B.length) {
-    /* The moment we leave the current tile. For a hold that's the
-       end of the pad, not the start. */
     const departT = (L.holdEnd[i] >= 0) ? B[L.holdEnd[i]] : B[i];
     const arriveT = B[ni];
     const span = Math.max(0.05, arriveT - departT);
@@ -1510,7 +1739,7 @@ function updateTiles(t, dt) {
   for (let k = 0; k < TILE_POOL; k++) {
     const idx = base + k;
     if (idx < 0 || idx >= L.count) continue;
-    if (L.absorbed[idx]) continue;          // consumed by a hold pad
+    if (L.absorbed[idx]) continue;
 
     const slot = ((idx % TILE_POOL) + TILE_POOL) % TILE_POOL;
     const m = tiles[slot];
@@ -1557,7 +1786,6 @@ function updateTiles(t, dt) {
     if (state.flowOn) emissive += 0.07 * theme.glow;
     if (state.rush > 0) emissive += 0.16 * theme.glow;
 
-    /* ---- hold pad: actively being ridden ---- */
     let holdProgress = -1;
     if (isHold && holdState.active && holdState.idx === idx) {
       const j = L.holdEnd[idx];
@@ -1570,7 +1798,6 @@ function updateTiles(t, dt) {
       glow += 0.12;
     }
 
-    /* ---- landing squash ---- */
     let land = 0;
     if (L.landSquash) {
       L.landSquash[idx] *= Math.exp(-dt * 10);
@@ -1585,9 +1812,7 @@ function updateTiles(t, dt) {
     const sqY = 1 - land * 0.26;
     const sqXZ = 1 + land * 0.11;
 
-    /* ---- placement ---- */
     if (isHold) {
-      const j = L.holdEnd[idx];
       const bob = Math.sin(t * 1.0 + idx * 0.5) * 0.03;
       m.position.set(
         L.padMidX[idx],
@@ -1604,7 +1829,6 @@ function updateTiles(t, dt) {
       m.scale.set(s * sqXZ, s * sqY, s * sqXZ);
     }
 
-    /* ---- Colour ---- */
     if (isMute) {
       m.material.color.copy(MUTE_INK).lerp(L.colors[idx], 0.14 + glow * 0.10);
       m.material.emissive.copy(MUTE_INK).multiplyScalar(0.10 + emissive * 0.6);
@@ -1632,7 +1856,6 @@ function updateTiles(t, dt) {
       m.material.emissive.copy(L.colors[idx]).multiplyScalar(emissive);
     }
 
-    /* ---- Surface shine sweep ---- */
     const sh = m.userData.shine;
     if (sh) {
       let speed = isGolden ? 0.62 : isCand ? 0.36 : isPrism ? 0.85 : 0.27;
@@ -1682,7 +1905,6 @@ function updateCueRing() {
     const k = 1 - timeToBeat / look;
     const eased = k * k;
     if (L.holdEnd[ni] >= 0) {
-      const j = L.holdEnd[ni];
       cueRing.position.set(L.padMidX[ni], L.padMidY[ni] + 0.30, L.padMidZ[ni]);
     } else {
       cueRing.position.set(L.x[ni], L.y[ni] + 0.245, L.z[ni]);
@@ -1718,9 +1940,6 @@ function pickFlavor(kind, gold) {
 let fbTimer = null;
 let fbGen = 0;
 
-/* NOTE: only the CSS classes f-perfect / f-good / f-ok / f-miss
-   (+ f-gold) exist in style.css, so every new mechanic maps onto
-   one of those four. */
 function showFeedback(text, cls, opts = {}) {
   if (!feedbackEl) return;
   const gen = ++fbGen;
@@ -1919,16 +2138,13 @@ function onJudge(kind, offset, weight, idx) {
   const base = kind === 'perfect' ? 300 : kind === 'good' ? 150 : 60;
   let gained = Math.round(base * comboMult * flowMult * rushMult * typeMult);
 
-  /* Ghost tiles are grace notes — half value, no penalty ever. */
   if (L.kinds[idx] === 'ghost') gained = Math.round(gained * 0.5);
 
-  /* Hold completion bonus scales with how long you held. */
   if (L.kinds[idx] === 'hold') {
     const len = L.holdEnd[idx] - idx + 1;
     gained += Math.round(90 * len * comboMult * flowMult * rushMult);
   }
 
-  /* ---- Golden tile ---- */
   let goldenFresh = false;
   if (kind === 'perfect' && idx >= 0 && idx < L.count) {
     if (L.goldCand[idx] === 1 && L.golden[idx] === 0) {
@@ -1950,7 +2166,6 @@ function onJudge(kind, offset, weight, idx) {
     }
   }
 
-  /* ---- Prism tile: perfect hit ignites a Prism Rush ---- */
   let prismFresh = false;
   if (kind === 'perfect' && L.kinds[idx] === 'prism') {
     prismFresh = true;
@@ -1967,7 +2182,6 @@ function onJudge(kind, offset, weight, idx) {
   score += gained;
   popScore();
 
-  /* ---- Feedback ---- */
   if (kind === 'perfect') {
     if (prismFresh) {
       showFeedback('PRISM', 'perfect', { gold: true, flavor: pickFlavor('prism') });
@@ -1997,7 +2211,6 @@ function onJudge(kind, offset, weight, idx) {
   updateHUD();
 }
 
-/* ---- input: press ---- */
 function onTap() {
   if (state.mode !== 'play' || !state.level) return;
   const L = state.level;
@@ -2020,7 +2233,6 @@ function onTap() {
   const win = timingWindow(best);
   const kind = L.kinds[best];
 
-  /* Mutes have a slightly tighter "do not touch" window. */
   if (kind === 'mute') {
     if (bestD > win * 0.85) return;
     judged[best] = 'break';
@@ -2050,7 +2262,6 @@ function onTap() {
   if (t >= B[best]) resolveJudge(best);
 }
 
-/* ---- input: release ---- */
 function onRelease() {
   if (state.mode !== 'play' || !holdState.active) return;
   const L = state.level;
@@ -2064,7 +2275,7 @@ function onRelease() {
   const d = t - endT;
 
   let relGrade;
-  if (d < -win * 1.6) relGrade = 'ok';           // bailed out way early
+  if (d < -win * 1.6) relGrade = 'ok';
   else if (Math.abs(d) < win * 0.45) relGrade = 'perfect';
   else if (Math.abs(d) < win * 0.85) relGrade = 'good';
   else relGrade = 'ok';
@@ -2117,6 +2328,7 @@ function showScreen(el) {
   menuEl.classList.add('hidden');
   loadingEl.classList.add('hidden');
   resultsEl.classList.add('hidden');
+  presetsEl.classList.add('hidden');
   if (el) el.classList.remove('hidden');
 }
 function showLoading(title, sub, progress) {
@@ -2258,7 +2470,6 @@ async function startFromBuffer(buffer, precomputed) {
   judgePtr = 0;
   resolvePtr = 0;
 
-  /* absorbed beats are never judged individually */
   for (let i = 0; i < nBeats; i++) {
     if (state.level.absorbed[i]) {
       judged[i] = 'skip';
@@ -2449,11 +2660,10 @@ async function makeDemoBuffer() {
   for (let b = 0; b < bars; b++) {
     const bt = t0 + b * barLen;
     const ch = prog[b % prog.length];
-    const isBreak = (b % 8 === 6);          // a genuine drop — teaches MUTE tiles
-    const isSustain = (b % 8 === 3);        // a long held bass — teaches HOLD tiles
+    const isBreak = (b % 8 === 6);
+    const isSustain = (b % 8 === 3);
 
     if (isBreak) {
-      /* near-silence: only a whisper of pad */
       pad(bt, barLen, ch.chord.map(f => f * 2), 0.020);
       continue;
     }
@@ -2464,13 +2674,11 @@ async function makeDemoBuffer() {
       const t = bt + k * spb;
 
       if (isSustain && k === 0) {
-        /* one long note across the whole bar */
         bass(bt, barLen * 0.96, ch.root / 2, 0.26);
         kick(bt, 0.92);
         continue;
       }
       if (isSustain && k > 0) {
-        /* hats + snare only, bass sustains underneath */
         if (k === 2) snare(t, 0.16);
         hat(t, 0.07);
         continue;
@@ -2564,10 +2772,15 @@ $('demo').addEventListener('click', async () => {
   }
 });
 
+presetsBtn.addEventListener('click', () => { openPresets(); });
+presetsBackBtn.addEventListener('click', () => {
+  state.mode = 'menu';
+  showScreen(menuEl);
+});
+
 $('again').addEventListener('click', replay);
 $('back').addEventListener('click', backToMenu);
 
-/* ---- pointer / touch / keyboard input ---- */
 window.addEventListener('pointerdown', (e) => {
   if (e.target.closest('button, label, input, a')) return;
   onTap();
@@ -2653,7 +2866,6 @@ function tick(now) {
 
     readLiveAudio();
 
-    /* --- 1. holds that were never released --- */
     if (holdState.active) {
       const i = holdState.idx;
       const j = L.holdEnd[i];
@@ -2662,7 +2874,6 @@ function tick(now) {
       }
     }
 
-    /* --- 2. window closed with no tap → miss --- */
     while (judgePtr < L.count && t > deadline(judgePtr)) {
       const i = judgePtr;
       if (!judged[i]) {
@@ -2678,7 +2889,6 @@ function tick(now) {
       judgePtr++;
     }
 
-    /* --- 3. touchdown --- */
     while (true) {
       const ni = nextTile(state.pIdx);
       if (ni >= L.count || t < L.beats[ni]) break;
@@ -2694,7 +2904,6 @@ function tick(now) {
       state.camShake = Math.max(state.camShake, ty === 'bass' ? 0.008 : 0.004);
     }
 
-    /* --- 4. show grades exactly on landing --- */
     while (resolvePtr < L.count && t >= showTime(resolvePtr)) {
       const i = resolvePtr;
       if (!resolvedFlags[i]) {
@@ -2726,7 +2935,6 @@ function tick(now) {
   updateFlow(dt);
   updateRush(dt);
 
-  /* HUD tag refresh (cheap guard) */
   {
     const key = (state.rush > 0 ? 'R' : state.flowOn ? 'F' : '-');
     if (key !== lastHudKey) { lastHudKey = key; updateHUD(); }
@@ -2745,7 +2953,6 @@ function tick(now) {
     p.material.opacity = Math.min(0.45, p.userData.baseOpacity * pBoost);
   }
 
-  /* ---- Distant spectrum silhouette ---- */
   {
     barGroup.position.set(camTarget.x, -3.2, camTarget.z - 55);
     const bins = freqData ? Math.min(64, freqData.length - 1) : 0;
@@ -2773,7 +2980,6 @@ function tick(now) {
   keyLight.intensity = 2.05 + energy * 0.45;
   rimLight.intensity = 0.7 + energy * 0.55 + (state.flowOn ? 0.35 : 0);
 
-  /* Prism Rush paints the world */
   if (state.rush > 0) {
     state.rushHue = wrapHue(state.rushHue + dt * 140);
     rimLight.color.setHSL(state.rushHue / 360, 0.8, 0.7);
@@ -2834,6 +3040,13 @@ function tick(now) {
 applyTheme(makeTheme(0xBEA7));
 buildMenuLevel();
 showScreen(menuEl);
+
+/* Preload the preset list in the background so the badge is populated */
+loadPresetManifest().then(list => {
+  presetsCountEl.textContent = list.length;
+  presetsCountEl.classList.toggle('empty', list.length === 0);
+});
+
 requestAnimationFrame(tick);
   </script>
 </body>
