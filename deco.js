@@ -511,9 +511,11 @@ export function createDecoSystem(scene, opts = {}) {
 
       /* --- Position around the track, alternating sides --- */
       const sideSign = (i % 2 === 0) ? 1 : -1;
-      const sideDist = 7 + rng() * 12;
+      // Push islands further out so they read as scenery, not obstacles.
+      const sideDist = 14 + rng() * 14;                 // was 7..19, now 14..28
+      const aheadBias = (rng() - 0.5) * 12;             // more Z spread
       const px = bx + sideSign * sideDist + (rng() - 0.5) * 4;
-      const pz = bz + (rng() - 0.5) * 7;
+      const pz = bz + aheadBias;
 
       /* --- Height band --- */
       const heightRoll = rng();
