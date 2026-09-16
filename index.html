@@ -65,9 +65,7 @@
           <div class="preset-count" id="presetHeaderCount">—</div>
         </div>
 
-        <div class="preset-list" id="presetList" role="list">
-          <!-- filled by JS -->
-        </div>
+        <div class="preset-list" id="presetList" role="list"></div>
 
         <div class="preset-actions">
           <button class="btn ghost" id="presetsBack">Back</button>
@@ -78,9 +76,7 @@
     <div id="loading" class="screen hidden">
       <div class="card">
         <h2 id="loadTitle" class="dots">Listening</h2>
-        <div class="bar">
-          <div id="barFill"></div>
-        </div>
+        <div class="bar"><div id="barFill"></div></div>
         <p class="sub" id="loadSub" style="margin-bottom:0">Reading the rhythm</p>
       </div>
     </div>
@@ -120,52 +116,56 @@ const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
 const wrapHue = h => ((h % 360) + 360) % 360;
 
 /* ============================================================
-   PRESET SONGS — AUTOMATIC DISCOVERY
+   PRESET SONGS — ROBUST AUTO DISCOVERY
    ------------------------------------------------------------
-   Just drop an .mp3 (or m4a / wav / ogg / aac / aiff / caf)
-   into the  presongs/  folder next to this file. That's it.
-   The list is discovered automatically, in three tiers:
+   The app tries HARD to find your files with zero config:
 
-     1. Directory listing of  presongs/       ← the normal case
-        (works with Python http.server, npx serve,
-         http-server, nginx autoindex, Apache +Indexes, etc.)
+     1. Fetches  presongs/  (and several variants)
+     2. Parses whatever it gets back — HTML <a href>, JSON
+        autoindex, or even raw text — hunting for any string
+        ending in an audio extension.
+     3. Also tries  presongs/songs.json  if it exists.
+     4. Finally falls back to the PRESET_SONGS array below.
 
-     2. presongs/songs.json  if present      ← optional metadata
-        Accepts either an array or { "songs": [...] }.
-        Each entry: { title, artist, file }  — file is required.
+   IMPORTANT: this only works when the page is SERVED over
+   http:// or https://  — NOT when opened as a file:// URL.
+   Browsers block directory reads on file:// for security.
 
-     3. The PRESET_SONGS array below         ← last resort
-        Only used if directory listing fails AND no JSON.
+   To serve locally, run one of these in the folder that
+   contains index.html:
 
-   Filenames are pretty-printed for the menu:
-       01-neon_drift.mp3     → "01 Neon Drift"
-       Prism - Glass River   → artist "Prism", title "Glass River"
+       python -m http.server 8080
+       npx serve
+       php -S localhost:8080
+
+   Then open http://localhost:8080/ in your browser.
    ============================================================ */
 
 const PRESET_DIR = 'presongs/';
 const PRESET_MANIFEST = PRESET_DIR + 'songs.json';
 const PRESET_EXT = /\.(mp3|m4a|aac|wav|aif|aiff|ogg|oga|caf)$/i;
 
-/* Last-resort manual list — leave empty and rely on auto-discovery. */
+/* Optional manual override — leave empty to rely on auto-discovery. */
 const PRESET_SONGS = [
   // { title: 'Neon Drift', artist: 'Prism', file: 'presongs/neon-drift.mp3' },
 ];
 
 let presetCache = [];
+let lastDiscoveryReport = [];
 
-/* Turn "01-neon_drift" into "01 Neon Drift" */
+/* ---------- filename prettifier ---------- */
 function prettifyBase(base) {
-  return base
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')   // split camelCase
-    .replace(/[-_]+/g, ' ')                   // dashes / underscores → spaces
-    .replace(/\s+/g, ' ')                     // collapse whitespace
+  return String(base)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim()
-    .replace(/\b\w/g, c => c.toUpperCase());  // title-case
+    .replace(/\b\w/g, c => c.toUpperCase());
 }
 
-/* Best-effort title / artist from a filename. */
 function parseFilename(file) {
   const base = String(file).split('/').pop().replace(PRESET_EXT, '');
+  // "Artist - Title"  →  split on dash
   const dash = base.match(/^(.+?)\s+[-–—]\s+(.+)$/);
   if (dash) {
     const artist = prettifyBase(dash[1]);
@@ -178,102 +178,201 @@ function parseFilename(file) {
 function normalizePresetEntry(entry) {
   if (!entry) return null;
   if (typeof entry === 'string') {
-    const file = entry;
-    const meta = parseFilename(file);
-    return { title: meta.title, artist: meta.artist, file };
+    const meta = parseFilename(entry);
+    return { title: meta.title, artist: meta.artist, file: entry };
   }
-  const file = entry.file || entry.src || entry.url;
+  const file = entry.file || entry.src || entry.url || entry.path || entry.name;
   if (!file) return null;
   const meta = parseFilename(file);
   return {
     title: entry.title || meta.title,
     artist: entry.artist || entry.by || meta.artist,
-    file
+    file: file.startsWith('presongs/') || file.includes('/') ? file : PRESET_DIR + file
   };
 }
 
-/* ---- Tier 1: parse a directory listing of presongs/ ---- */
-async function discoverFromDirectory() {
-  let res;
+/* ---------- fetch with timeout (so we never hang) ---------- */
+async function fetchWithTimeout(url, ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
   try {
-    res = await fetch(PRESET_DIR, { cache: 'no-cache' });
-  } catch (e) {
-    return null; // file:// or offline — try next tier
+    return await fetch(url, { cache: 'no-cache', signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
   }
-  if (!res.ok) return null;
-
-  let html;
-  try { html = await res.text(); }
-  catch (e) { return null; }
-
-  const found = new Set();
-  const hrefRe = /href\s*=\s*["']([^"']+)["']/gi;
-  let m;
-  while ((m = hrefRe.exec(html)) !== null) {
-    let href = m[1];
-    // strip query + fragment
-    href = href.split('#')[0].split('?')[0];
-    if (!href) continue;
-    // decode percent-encoding so "My%20Song.mp3" → "My Song.mp3"
-    let decoded = href;
-    try { decoded = decodeURIComponent(href); } catch (e) { /* keep raw */ }
-    // filename only
-    const parts = decoded.split('/');
-    const base = parts[parts.length - 1];
-    if (!base || base === '..' || base === '.') continue;
-    if (!PRESET_EXT.test(base)) continue;
-    found.add(PRESET_DIR + base);
-  }
-
-  if (found.size === 0) return null;
-  return Array.from(found);
 }
 
-/* ---- Tier 2: presongs/songs.json ---- */
+/* ---------- extract a candidate file path from any string ---------- */
+function collectPresetFile(rawHref, found) {
+  if (!rawHref) return;
+  let href = String(rawHref).trim().split('#')[0].split('?')[0];
+  if (!href) return;
+  if (href.startsWith('//')) return;             // protocol-relative CDN link
+
+  // Strip absolute origin if present
+  if (/^https?:\/\//i.test(href)) {
+    try { href = new URL(href).pathname; } catch (e) { return; }
+  }
+
+  let decoded = href;
+  try { decoded = decodeURIComponent(href); } catch (e) { decoded = href; }
+
+  const parts = decoded.split('/').filter(p => p && p !== '.' && p !== '..');
+  if (!parts.length) return;
+  const base = parts[parts.length - 1];
+  if (!base) return;
+  if (!PRESET_EXT.test(base)) return;
+
+  // Always normalise to presongs/<file> — flat folder assumption.
+  found.add(PRESET_DIR + base);
+}
+
+/* ---------- Tier 1: directory listing of presongs/ ---------- */
+async function discoverFromDirectory() {
+  // Try several path spellings — different servers normalise differently
+  const variants = [
+    PRESET_DIR,
+    PRESET_DIR.replace(/\/$/, ''),   // "presongs"
+    './' + PRESET_DIR,
+    './' + PRESET_DIR.replace(/\/$/, ''),
+    '/' + PRESET_DIR,
+    '/presongs',
+    'Presongs/',
+    'PRESONGS/'
+  ];
+
+  const seen = new Set();
+  const found = new Set();
+
+  for (const url of variants) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+
+    let res = null;
+    try {
+      res = await fetchWithTimeout(url, 4000);
+    } catch (e) {
+      lastDiscoveryReport.push(`✗ ${url} — network error (${e.name || 'fetch failed'})`);
+      continue;
+    }
+
+    if (!res.ok) {
+      lastDiscoveryReport.push(`✗ ${url} — HTTP ${res.status}`);
+      continue;
+    }
+
+    let text = '';
+    try { text = await res.text(); }
+    catch (e) {
+      lastDiscoveryReport.push(`✗ ${url} — could not read body`);
+      continue;
+    }
+
+    if (!text || text.length < 8) {
+      lastDiscoveryReport.push(`✗ ${url} — empty response`);
+      continue;
+    }
+
+    lastDiscoveryReport.push(`✓ ${url} — ${text.length} bytes received`);
+
+    // --- JSON autoindex? ---
+    const trimmed = text.trim();
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        const json = JSON.parse(trimmed);
+        const arr = Array.isArray(json)
+          ? json
+          : (json.files || json.entries || json.songs || json.items || json.list || null);
+        if (Array.isArray(arr)) {
+          for (const entry of arr) {
+            const name = typeof entry === 'string'
+              ? entry
+              : (entry && (entry.name || entry.file || entry.href || entry.path));
+            if (name) collectPresetFile(name, found);
+          }
+        }
+      } catch (e) { /* not JSON, keep going */ }
+    }
+
+    // --- HTML <a href="..."> ---
+    const hrefRe = /href\s*=\s*["']([^"']+)["']/gi;
+    let m;
+    while ((m = hrefRe.exec(text)) !== null) collectPresetFile(m[1], found);
+
+    // --- Any bare filename-like token in the body ---
+    // Matches "my song.mp3", "Y2Mate.is - DECO_27 - feat .mp3", "foo/bar.m4a"
+    const bareRe = /([^\s"'<>()\[\]{},;|]+\.(?:mp3|m4a|aac|wav|aif|aiff|ogg|oga|caf))/gi;
+    while ((m = bareRe.exec(text)) !== null) collectPresetFile(m[1], found);
+
+    if (found.size > 0) break;
+  }
+
+  return found.size ? Array.from(found) : null;
+}
+
+/* ---------- Tier 2: presongs/songs.json ---------- */
 async function discoverFromManifest() {
   try {
-    const res = await fetch(PRESET_MANIFEST, { cache: 'no-cache' });
-    if (!res.ok) return null;
-    const data = await res.json();
+    const res = await fetchWithTimeout(PRESET_MANIFEST, 3500);
+    if (!res.ok) {
+      lastDiscoveryReport.push(`✗ ${PRESET_MANIFEST} — HTTP ${res.status}`);
+      return null;
+    }
+    const text = await res.text();
+    const data = JSON.parse(text);
     const arr = Array.isArray(data)
       ? data
       : (data && Array.isArray(data.songs) ? data.songs : null);
     if (!arr || !arr.length) return null;
+    lastDiscoveryReport.push(`✓ ${PRESET_MANIFEST} — ${arr.length} entries`);
     return arr.map(normalizePresetEntry).filter(Boolean);
   } catch (e) {
+    lastDiscoveryReport.push(`✗ ${PRESET_MANIFEST} — ${e.message || 'failed'}`);
     return null;
   }
 }
 
-/* ---- Tier 3: hardcoded PRESET_SONGS ---- */
+/* ---------- Tier 3: hardcoded PRESET_SONGS ---------- */
 function discoverFromHardcoded() {
   if (!Array.isArray(PRESET_SONGS) || !PRESET_SONGS.length) return null;
   return PRESET_SONGS.map(normalizePresetEntry).filter(Boolean);
 }
 
-/* ---- Master discovery ---- */
+/* ---------- Master discovery ---------- */
 async function discoverPresetSongs() {
-  // 1. directory listing → auto-discovery, no config needed
+  lastDiscoveryReport = [];
+
+  if (location.protocol === 'file:') {
+    lastDiscoveryReport.push('⚠ Page is opened as file:// — auto-discovery is blocked by the browser.');
+    lastDiscoveryReport.push('  Serve the folder over http:// instead (see notes below).');
+  }
+
+  // 1. directory listing
   const files = await discoverFromDirectory();
   if (files && files.length) {
     const list = files.map(f => normalizePresetEntry(f)).filter(Boolean);
     list.sort((a, b) =>
       a.file.localeCompare(b.file, undefined, { numeric: true, sensitivity: 'base' })
     );
+    lastDiscoveryReport.push(`✓ Found ${list.length} file(s) in ${PRESET_DIR}`);
     return list;
   }
 
-  // 2. optional manifest with custom metadata
+  // 2. songs.json
   const manifest = await discoverFromManifest();
   if (manifest && manifest.length) return manifest;
 
   // 3. hardcoded fallback
   const hard = discoverFromHardcoded();
-  if (hard && hard.length) return hard;
+  if (hard && hard.length) {
+    lastDiscoveryReport.push(`✓ Using ${hard.length} hardcoded PRESET_SONGS entry(ies).`);
+    return hard;
+  }
 
   return [];
 }
 
+/* ---------- render ---------- */
 function renderPresetList(list) {
   presetCache = list;
   presetListEl.innerHTML = '';
@@ -285,17 +384,37 @@ function renderPresetList(list) {
 
   if (n === 0) {
     presetSubEl.textContent = 'No presets found yet';
+    const isFile = location.protocol === 'file:';
+    const reportHtml = lastDiscoveryReport.length
+      ? '<div class="preset-diag">' +
+          lastDiscoveryReport.map(l => '<div>' + escapeHtml(l) + '</div>').join('') +
+        '</div>'
+      : '';
+
     presetListEl.innerHTML = `
       <div class="preset-empty">
         <div class="preset-empty-icon" aria-hidden="true">♪</div>
-        <div class="preset-empty-title">No songs in the folder</div>
+        <div class="preset-empty-title">${isFile ? 'Serve this page over http://' : 'No songs found'}</div>
         <div class="preset-empty-body">
-          Drop your audio files into <code>presongs/</code> and refresh —
-          mp3, m4a, wav, ogg, aac, aiff and caf all work.<br><br>
-          If nothing shows up, your server may hide directory listings.
-          In that case add a <code>presongs/songs.json</code> with a
-          <code>[{ "file": "presongs/song.mp3" }]</code> array.
+          ${isFile
+            ? 'Browsers block folder reads when you open a page as <code>file://</code>. ' +
+              'Start a tiny local server inside this folder and open the URL it prints.'
+            : 'The app could not read a directory listing for <code>presongs/</code>. ' +
+              'Your server may hide folder contents.'
+          }
+          <div class="preset-cmds">
+            <code>python -m http.server 8080</code>
+            <code>npx serve</code>
+            <code>php -S localhost:8080</code>
+          </div>
+          Then open <code>http://localhost:8080/</code>.<br><br>
+          If your server still refuses to list the folder, add a file called
+          <code>presongs/songs.json</code> containing:
+          <div class="preset-cmds preset-cmds-block">
+            <code>[{ "file": "presongs/Y2Mate.is - DECO_27 - feat .mp3" }]</code>
+          </div>
         </div>
+        ${reportHtml}
       </div>
     `;
     return;
@@ -345,11 +464,20 @@ function escapeHtml(str) {
 async function openPresets() {
   state.mode = 'menu';
   showScreen(presetsEl);
-  presetListEl.innerHTML = '<div class="preset-loading">Loading</div>';
-  presetSubEl.textContent = 'Looking for songs';
+  presetListEl.innerHTML = '<div class="preset-loading">Scanning</div>';
+  presetSubEl.textContent = 'Looking for songs in presongs/';
   presetHeaderCountEl.textContent = '…';
 
   const list = await discoverPresetSongs();
+
+  // Diagnostic dump so you can see exactly what happened
+  console.groupCollapsed(
+    `[Prism s-tile] Preset discovery — ${list.length} found`
+  );
+  for (const line of lastDiscoveryReport) console.log(line);
+  console.log('Final list:', list);
+  console.groupEnd();
+
   renderPresetList(list);
 }
 
@@ -376,38 +504,11 @@ async function playPreset(song, el) {
   await nextFrame();
 
   try {
-    let raw = null;
-
-    // Try fetch first (works when served over http/https)
-    try {
-      const res = await fetch(song.file, { cache: 'no-cache' });
-      if (res.ok) {
-        raw = await res.arrayBuffer();
-      } else {
-        throw new Error('HTTP ' + res.status);
-      }
-    } catch (fetchErr) {
-      // Fallback: XHR (helps with some local dev setups)
-      try {
-        raw = await new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('GET', song.file, true);
-          xhr.responseType = 'arraybuffer';
-          xhr.onload = () => {
-            if (xhr.status === 0 || (xhr.status >= 200 && xhr.status < 300)) {
-              resolve(xhr.response);
-            } else {
-              reject(new Error('XHR ' + xhr.status));
-            }
-          };
-          xhr.onerror = () => reject(new Error('XHR network error'));
-          xhr.send();
-        });
-      } catch (xhrErr) {
-        throw fetchErr;
-      }
-    }
-
+    // The browser URL-encodes any spaces / unicode when fetching, so
+    // "presongs/Y2Mate.is - DECO_27 - feat .mp3" resolves correctly.
+    const res = await fetch(song.file, { cache: 'no-cache' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const raw = await res.arrayBuffer();
     if (!raw || !raw.byteLength) throw new Error('Empty response');
 
     showLoading('Decoding', 'Unpacking the audio…', 0.14);
@@ -422,7 +523,7 @@ async function playPreset(song, el) {
     console.error('Preset load error:', err);
     if (el) el.classList.remove('active');
     loadTitle.textContent = 'Could not load that song';
-    loadSub.textContent = 'Check that the file exists in presongs/ and that you are serving the page (not opening it as file://).';
+    loadSub.textContent = 'Check that the file exists and that you are serving the page over http:// (not file://).';
     barFill.style.width = '0%';
     setTimeout(() => { showScreen(presetsEl); state.mode = 'menu'; }, 2800);
   }
@@ -463,7 +564,6 @@ gradientMap.needsUpdate = true;
 const INK = 0x33304a;
 const outlineMat = new THREE.MeshBasicMaterial({ color: INK, side: THREE.BackSide });
 
-/* ---- Sky gradient backdrop ---------------------------------- */
 let skyTexture = null;
 function makeSkyTexture(bg, paper2, ink) {
   const c = document.createElement('canvas');
@@ -485,7 +585,6 @@ function makeSkyTexture(bg, paper2, ink) {
   return tex;
 }
 
-/* ---- Ground grid --------------------------------------------- */
 const grid = new THREE.GridHelper(420, 84, 0xffffff, 0xffffff);
 grid.material.transparent = true;
 grid.material.opacity = 0.075;
@@ -493,7 +592,6 @@ grid.material.depthWrite = false;
 grid.position.y = -0.06;
 scene.add(grid);
 
-/* ---- Spectrum backdrop (distant, gentle) -------------------- */
 const BAR_N = 28;
 const BAR_HALF = BAR_N >> 1;
 const barGeo = new THREE.BoxGeometry(0.36, 1, 0.36);
@@ -517,7 +615,6 @@ for (let i = 0; i < BAR_N; i++) {
   bars.push(m);
 }
 
-/* ---- Ambient particles -------------------------------------- */
 const particleGroup = new THREE.Group();
 scene.add(particleGroup);
 const particles = [];
@@ -540,12 +637,8 @@ const particles = [];
   }
 }
 
-/* ---- Procedural scenery (deco.js) --------------------------- */
 const deco = createDecoSystem(scene, { density: 1 });
 
-/* ============================================================
-   SURFACE SHINE  (injected into MeshToonMaterial)
-   ============================================================ */
 function patchShine(mesh) {
   const u = {
     uShineT:   { value: 0 },
@@ -585,7 +678,6 @@ function patchShine(mesh) {
   mesh.material.needsUpdate = true;
 }
 
-/* ---- Tiles -------------------------------------------------- */
 const TILE_W = 1.78, TILE_H = 0.42, TILE_D = 1.78;
 const TILE_POOL = 48;
 const tileGeo = new THREE.BoxGeometry(TILE_W, TILE_H, TILE_D);
@@ -605,7 +697,6 @@ for (let i = 0; i < TILE_POOL; i++) {
   tiles.push(m);
 }
 
-/* ---- Player ------------------------------------------------- */
 const PLAYER_R = 0.62;
 const playerGroup = new THREE.Group();
 const playerMesh = new THREE.Mesh(
@@ -618,7 +709,6 @@ playerMesh.add(playerOutline);
 playerGroup.add(playerMesh);
 scene.add(playerGroup);
 
-/* ---- Motion trail ------------------------------------------- */
 const TRAIL_N = 16;
 const trailGeo = new THREE.OctahedronGeometry(0.34, 0);
 const trailMeshes = [];
@@ -641,7 +731,6 @@ const shadowMesh = new THREE.Mesh(
 shadowMesh.rotation.x = -Math.PI / 2;
 scene.add(shadowMesh);
 
-/* ---- Pulse rings -------------------------------------------- */
 const ringGeo = new THREE.RingGeometry(0.72, 0.9, 44);
 const rings = [];
 for (let i = 0; i < 10; i++) {
@@ -663,7 +752,6 @@ function spawnRing(pos, strong, color) {
   r.mesh.scale.setScalar(0.55);
 }
 
-/* ---- Beat cue ring ------------------------------------------ */
 const cueRing = new THREE.Mesh(
   new THREE.RingGeometry(0.62, 0.82, 52),
   new THREE.MeshBasicMaterial({ color: INK, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide })
@@ -672,9 +760,6 @@ cueRing.rotation.x = -Math.PI / 2;
 cueRing.visible = false;
 scene.add(cueRing);
 
-/* ============================================================
-   GOLDEN / PRISM FX
-   ============================================================ */
 const GOLD = new THREE.Color(0xffc93c);
 const GOLD_HOT = new THREE.Color(0xfff3c4);
 const GOLD_SOFT = new THREE.Color(0xffe9a8);
@@ -817,9 +902,6 @@ function spawnRestRipple(pos) {
   spawnShock(pos, theme.mint, { delay: 0.05, dur: 0.8, from: 0.15, to: 2.2, peak: 0.16, y: 0.31 });
 }
 
-/* ============================================================
-   THEME ENGINE
-   ============================================================ */
 function mulberry32(a) {
   return function () {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -916,9 +998,6 @@ function applyTheme(th) {
   if (meta) meta.setAttribute('content', '#' + th.bg.getHexString());
 }
 
-/* ============================================================
-   AUDIO ENGINE
-   ============================================================ */
 let actx = null;
 
 function createAudioContext() {
@@ -980,9 +1059,6 @@ function blip(freq, gain, dur, type) {
   document.addEventListener(ev, () => { unlockAudio(); }, { passive: true });
 });
 
-/* ============================================================
-   BEAT ANALYSIS — three bands + sustain envelope + onsets
-   ============================================================ */
 const MAX_ANALYSIS_SECONDS = 260;
 const ANALYSIS_SR = 11025;
 const HOP = 128;
@@ -1344,9 +1420,6 @@ function seedFrom(nov, frames, bpm, duration) {
   return s >>> 0;
 }
 
-/* ============================================================
-   TILE KIND CLASSIFICATION
-   ============================================================ */
 function classifyKinds(beatTimes, energies, types, weights, lowN, highN, sustain, seed) {
   const n = beatTimes.length;
   const kinds = new Array(n).fill('beat');
@@ -1428,9 +1501,6 @@ function classifyKinds(beatTimes, energies, types, weights, lowN, highN, sustain
   return { kinds, holdEnd, absorbed };
 }
 
-/* ============================================================
-   LEVEL
-   ============================================================ */
 const WHITE = new THREE.Color(0xffffff);
 
 function buildLevel(beatTimes, energies, seed, extra) {
@@ -1579,9 +1649,6 @@ function buildLevel(beatTimes, energies, seed, extra) {
   };
 }
 
-/* ============================================================
-   STATE
-   ============================================================ */
 const state = {
   mode: 'menu',
   level: null, pIdx: 0,
@@ -1590,14 +1657,8 @@ const state = {
   audioSrc: null, gainNode: null,
   bpm: 0, buffer: null, camShake: 0,
   songDuration: 0,
-  pulse: 0,
-  live: 0,
-  roll: 0,
-  flow: 0,
-  flowOn: false,
-  landKick: 0,
-  rush: 0,
-  rushHue: 0,
+  pulse: 0, live: 0, roll: 0, flow: 0, flowOn: false,
+  landKick: 0, rush: 0, rushHue: 0,
   lastAnalysis: null
 };
 let judged = [], judgePtr = 0;
@@ -1694,9 +1755,6 @@ function buildMenuLevel() {
   deco.build(state.level, 0xBEA7);
 }
 
-/* ============================================================
-   PLAYER TRANSFORM
-   ============================================================ */
 function updatePlayerTransform(t, dt) {
   const L = state.level;
   const B = L.beats;
@@ -1780,7 +1838,6 @@ function updatePlayerTransform(t, dt) {
   shadowMesh.material.opacity = 0.17 * sc;
 }
 
-/* ---- trail -------------------------------------------------- */
 function updateTrail(dt) {
   trailTimer += dt;
   if (trailTimer >= 0.032) {
@@ -1803,9 +1860,6 @@ function updateTrail(dt) {
   }
 }
 
-/* ============================================================
-   TILES
-   ============================================================ */
 function updateTiles(t, dt) {
   for (let s = 0; s < TILE_POOL; s++) tiles[s].visible = false;
 
@@ -1955,9 +2009,6 @@ function updateTiles(t, dt) {
   }
 }
 
-/* ============================================================
-   RINGS + CUE
-   ============================================================ */
 function updateRings(dt) {
   for (const r of rings) {
     if (r.life < 0) continue;
@@ -1996,9 +2047,6 @@ function updateCueRing() {
   }
 }
 
-/* ============================================================
-   FEEDBACK
-   ============================================================ */
 const FLAVORS = {
   perfect: ['FLAWLESS', 'SILKY', 'ON POINT', 'SHARP', 'CLEAN', 'SMOOTH', 'NAILED IT', 'SNAP', 'BUTTER'],
   good:    ['NICE', 'SOLID', 'TIGHT', 'COOL', 'SWEET', 'SNUG'],
@@ -2053,7 +2101,6 @@ function showFeedback(text, cls, opts = {}) {
   try {
     if (typeof wrap.animate === 'function') {
       wrap.animate(frames, { duration: dur, easing: 'cubic-bezier(.18,.9,.28,1)', fill: 'forwards' });
-
       if (tail && typeof tail.animate === 'function') {
         tail.animate([
           { transform: 'translateY(10px) scale(0.8)', opacity: 0 },
@@ -2122,9 +2169,6 @@ function flowBurst() {
   state.camShake = Math.max(state.camShake, 0.012);
 }
 
-/* ============================================================
-   JUDGING
-   ============================================================ */
 function resolveJudge(i) {
   if (i < 0 || !resolvedFlags) return;
   if (resolvedFlags[i]) return;
@@ -2373,9 +2417,6 @@ function finishHold(relGrade, offset) {
   holdState.idx = -1;
 }
 
-/* ============================================================
-   FLOW / RUSH
-   ============================================================ */
 function updateFlow(dt) {
   if (state.mode === 'play') {
     state.flow = Math.max(0, state.flow - dt * 0.035);
@@ -2399,9 +2440,6 @@ function updateRush(dt) {
   }
 }
 
-/* ============================================================
-   SCREENS
-   ============================================================ */
 function showScreen(el) {
   menuEl.classList.add('hidden');
   loadingEl.classList.add('hidden');
@@ -2427,9 +2465,6 @@ function stopPlayback(fadeMs) {
   }
 }
 
-/* ============================================================
-   LIVE ANALYSER
-   ============================================================ */
 let analyser = null;
 let freqData = null;
 
@@ -2454,9 +2489,6 @@ function readLiveAudio() {
   state.live += (bass - state.live) * 0.28;
 }
 
-/* ============================================================
-   PLAYBACK
-   ============================================================ */
 async function startFromBuffer(buffer, precomputed) {
   const ctx = await ensureRunning();
   if (!ctx) {
@@ -2648,9 +2680,6 @@ function backToMenu() {
   showScreen(menuEl);
 }
 
-/* ============================================================
-   DEMO TRACK
-   ============================================================ */
 async function makeDemoBuffer() {
   const ctx = createAudioContext();
   if (!ctx) throw new Error('No audio');
@@ -2773,9 +2802,6 @@ async function makeDemoBuffer() {
   return await off.startRendering();
 }
 
-/* ============================================================
-   EVENTS
-   ============================================================ */
 fileInput.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
@@ -2900,9 +2926,6 @@ function onResize() {
 }
 onResize();
 
-/* ============================================================
-   MAIN LOOP
-   ============================================================ */
 let lastTime = performance.now();
 let worldTime = 0;
 let lastHudKey = '';
@@ -3112,15 +3135,10 @@ function tick(now) {
   renderer.render(scene, camera);
 }
 
-/* ============================================================
-   BOOT
-   ============================================================ */
 applyTheme(makeTheme(0xBEA7));
 buildMenuLevel();
 showScreen(menuEl);
 
-/* Populate the preset count badge in the background so the menu
-   immediately reflects what's in the presongs/ folder. */
 discoverPresetSongs().then(list => {
   presetsCountEl.textContent = list.length;
   presetsCountEl.classList.toggle('empty', list.length === 0);
