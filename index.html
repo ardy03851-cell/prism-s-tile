@@ -38,11 +38,11 @@
         <p class="tagline">Drop in a song. It maps the kick, snare and hats — then builds a path that moves the way
           the track does.</p>
       </div>
-      <div class="panel">
-        <label class="btn primary" for="file">Choose a song</label>
+      <div class="panel panel-side">
+        <label class="btn primary btn-tab" for="file">Choose a song</label>
         <input id="file" type="file"
           accept="audio/*,.mp3,.m4a,.aac,.wav,.aif,.aiff,.ogg,.oga,.caf" />
-        <button class="btn ghost" id="demo">Play the demo (precoded music for training)</button>
+        <button class="btn ghost btn-tab" id="demo">Play the demo (precoded music for training)</button>
         <div class="chips">
           <span class="chip">Headphones recommended</span>
           <span class="chip">MP3 · M4A · WAV</span>
@@ -989,6 +989,7 @@ function buildLevel(beatTimes, energies, seed, extra) {
   const n = beatTimes.length;
   const x = new Float32Array(n), y = new Float32Array(n), z = new Float32Array(n);
   const scale = new Float32Array(n), rot = new Float32Array(n);
+  const landSquash = new Float32Array(n);
   const colors = new Array(n);
 
   const types = (extra && extra.types) || new Array(n).fill('mid');
@@ -1101,7 +1102,7 @@ function buildLevel(beatTimes, energies, seed, extra) {
 
   return {
     beats: beatTimes, energies, x, y, z, colors, count: n,
-    types, weights, low: lows, high: highs, scale, rot,
+    types, weights, low: lows, high: highs, scale, rot, landSquash,
     golden, goldenT, goldCand
   };
 }
@@ -1121,9 +1122,12 @@ const state = {
   live: 0,
   roll: 0,
   flow: 0,
-  flowOn: false
+  flowOn: false,
+  landKick: 0,
+  lastAnalysis: null
 };
 let judged = [], judgePtr = 0;
+let judgedOffset = [], resolvedFlags = [], resolvePtr = 0;
 let score = 0, combo = 0, maxCombo = 0;
 let goldCount = 0;
 let counts = { perfect: 0, good: 0, ok: 0, miss: 0 };
@@ -1186,7 +1190,7 @@ function buildMenuLevel() {
 /* ============================================================
    PLAYER TRANSFORM
    ============================================================ */
-function updatePlayerTransform(t) {
+function updatePlayerTransform(t, dt) {
   const L = state.level;
   const B = L.beats;
   const i = state.pIdx;
@@ -1233,7 +1237,8 @@ function updatePlayerTransform(t) {
   state.hopProgress = p;
   playerGroup.position.copy(_fullPos);
 
-  state.squash += (0 - state.squash) * Math.min(1, 0.016 * 60 * 0.22);
+  /* frame-rate independent squash recovery */
+  state.squash += (0 - state.squash) * (1 - Math.exp(-dt * 11));
   const stretch = airborne * 0.20;
   let sy = (1 + state.squash) * (1 + stretch);
   sy = Math.max(0.55, Math.min(1.42, sy));
@@ -1328,14 +1333,26 @@ function updateTiles(t, dt) {
     if (type === 'hat') glow += 0.04;
     if (state.flowOn) emissive += 0.07 * theme.glow;
 
+    /* ---- landing squash (indie "jelly" feel) ---- */
+    let land = 0;
+    if (L.landSquash) {
+      L.landSquash[idx] *= Math.exp(-dt * 10);
+      land = L.landSquash[idx];
+      if (land < 0.002) L.landSquash[idx] = 0;
+    }
+
     const baseScale = L.scale[idx] || 1;
     const goldPop = isGolden ? (1 + gFlash * 0.35) : 1;
-    m.scale.setScalar(baseScale * (0.4 + spawnEase * 0.6) * (1 + pop) * goldPop);
+    const s = baseScale * (0.4 + spawnEase * 0.6) * (1 + pop) * goldPop;
+    const sqY = 1 - land * 0.26;
+    const sqXZ = 1 + land * 0.11;
+    m.scale.set(s * sqXZ, s * sqY, s * sqXZ);
 
     const bob = Math.sin(t * 1.2 + idx * 0.7) * (0.05 + (idx === state.pIdx ? pulse * 0.08 : 0));
-    m.position.set(L.x[idx], L.y[idx] + bob, L.z[idx]);
+    m.position.set(L.x[idx], L.y[idx] + bob - land * 0.10, L.z[idx]);
 
     m.rotation.y = L.rot[idx] + Math.sin(t * 0.45 + idx) * 0.05;
+    m.rotation.z = Math.sin(t * 0.6 + idx * 1.3) * 0.012;
 
     /* ---- Colour ---- */
     if (isGolden) {
@@ -1422,6 +1439,7 @@ let fbTimer = null;
 let fbGen = 0;
 
 function showFeedback(text, cls, opts = {}) {
+  if (!feedbackEl) return;
   const gen = ++fbGen;
   const gold = !!opts.gold;
   const flavor = opts.flavor || pickFlavor(cls, gold);
@@ -1441,24 +1459,36 @@ function showFeedback(text, cls, opts = {}) {
   const tilt = (Math.random() * 2 - 1) * 9;
   const dir = Math.random() < 0.5 ? -1 : 1;
   const dur = gold ? 1150 : 820;
+  const comboK = 1 + Math.min(0.30, combo * 0.008);
+
+  const frames = [
+    { transform: 'scale(' + (0.30 * comboK) + ') rotate(' + (tilt * 1.8) + 'deg)', opacity: 0 },
+    { transform: 'scale(' + (1.30 * comboK) + ') rotate(' + (tilt * 0.35) + 'deg)', opacity: 1, offset: 0.20 },
+    { transform: 'scale(' + (0.92 * comboK) + ') rotate(' + (tilt * -0.25) + 'deg)', opacity: 1, offset: 0.40 },
+    { transform: 'scale(' + (1.08 * comboK) + ') rotate(' + (tilt * 0.12) + 'deg)', opacity: 1, offset: 0.58 },
+    { transform: 'scale(1.00) rotate(0deg)', opacity: 1, offset: 0.76 },
+    { transform: 'scale(' + (1 + dir * 0.16) + ') rotate(' + (dir * 5) + 'deg)', opacity: 0 }
+  ];
 
   try {
-    wrap.animate([
-      { transform: 'scale(0.30) rotate(' + (tilt * 1.8) + 'deg)', opacity: 0 },
-      { transform: 'scale(1.30) rotate(' + (tilt * 0.35) + 'deg)', opacity: 1, offset: 0.20 },
-      { transform: 'scale(0.92) rotate(' + (tilt * -0.25) + 'deg)', opacity: 1, offset: 0.40 },
-      { transform: 'scale(1.08) rotate(' + (tilt * 0.12) + 'deg)', opacity: 1, offset: 0.58 },
-      { transform: 'scale(1.00) rotate(0deg)', opacity: 1, offset: 0.76 },
-      { transform: 'scale(' + (1 + dir * 0.16) + ') rotate(' + (dir * 5) + 'deg)', opacity: 0 }
-    ], { duration: dur, easing: 'cubic-bezier(.18,.9,.28,1)', fill: 'forwards' });
+    if (typeof wrap.animate === 'function') {
+      wrap.animate(frames, { duration: dur, easing: 'cubic-bezier(.18,.9,.28,1)', fill: 'forwards' });
 
-    if (tail) {
-      tail.animate([
-        { transform: 'translateY(10px) scale(0.8)', opacity: 0 },
-        { transform: 'translateY(0) scale(1)', opacity: 0.85 }
-      ], { duration: 280, delay: 90, easing: 'cubic-bezier(.2,1.4,.4,1)', fill: 'forwards' });
+      if (tail && typeof tail.animate === 'function') {
+        tail.animate([
+          { transform: 'translateY(10px) scale(0.8)', opacity: 0 },
+          { transform: 'translateY(0) scale(1)', opacity: 0.85 }
+        ], { duration: 280, delay: 90, easing: 'cubic-bezier(.2,1.4,.4,1)', fill: 'forwards' });
+      }
+    } else {
+      /* Fallback: no WAAPI — still show the text */
+      wrap.style.opacity = '1';
+      wrap.style.transform = 'scale(1)';
     }
-  } catch (e) { /* WAAPI unavailable — text still shows */ }
+  } catch (e) {
+    wrap.style.opacity = '1';
+    wrap.style.transform = 'scale(1)';
+  }
 
   clearTimeout(fbTimer);
   fbTimer = setTimeout(() => {
@@ -1507,7 +1537,21 @@ function flowBurst() {
 
 /* ============================================================
    JUDGING
+   ------------------------------------------------------------
+   Taps are recorded immediately, but the *grade* is only shown
+   the moment the player physically lands on the tile (or, for a
+   late tap, as soon as it is registered). That guarantees a
+   piece of landing text on every single beat.
    ============================================================ */
+function resolveJudge(i) {
+  if (i < 0 || !resolvedFlags) return;
+  if (resolvedFlags[i]) return;
+  const k = judged[i];
+  if (k !== 'perfect' && k !== 'good' && k !== 'ok' && k !== 'miss') return;
+  resolvedFlags[i] = true;
+  onJudge(k, judgedOffset[i] || 0, state.level.weights[i], i);
+}
+
 function onJudge(kind, offset, weight, idx) {
   if (kind === 'miss') {
     counts.miss++; combo = 0;
@@ -1594,7 +1638,7 @@ function onTap() {
   const B = state.level.beats;
   let best = -1, bestD = 1e9;
   const from = Math.max(0, judgePtr - 1);
-  const to = Math.min(B.length, judgePtr + 5);
+  const to = Math.min(B.length, judgePtr + 6);
   for (let i = from; i < to; i++) {
     if (judged[i]) continue;
     const d = Math.abs(B[i] - t);
@@ -1612,7 +1656,11 @@ function onTap() {
   else kind = 'ok';
 
   judged[best] = kind;
-  onJudge(kind, offset, state.level.weights[best], best);
+  judgedOffset[best] = offset;
+
+  /* If the landing already happened (late tap), show it right away.
+     Otherwise it will be shown by the landing resolver. */
+  if (t >= B[best]) resolveJudge(best);
 }
 
 /* ============================================================
@@ -1713,6 +1761,7 @@ async function startFromBuffer(buffer, precomputed) {
       analysis.seed = 0xBEA7;
     }
   }
+  state.lastAnalysis = analysis;
 
   applyTheme(makeTheme(analysis.seed || 0xBEA7));
 
@@ -1756,11 +1805,18 @@ async function startFromBuffer(buffer, precomputed) {
   state.flow = 0;
   state.flowOn = false;
   state.live = 0;
+  state.menuTime = 0;
 
   score = 0; combo = 0; maxCombo = 0; goldCount = 0;
   counts = { perfect: 0, good: 0, ok: 0, miss: 0 };
-  judged = new Array(state.level.beats.length).fill(null);
+
+  const nBeats = state.level.beats.length;
+  judged = new Array(nBeats).fill(null);
+  judgedOffset = new Array(nBeats).fill(0);
+  resolvedFlags = new Array(nBeats).fill(false);
   judgePtr = 0;
+  resolvePtr = 0;
+
   updateHUD();
   clearTiming();
 
@@ -1833,7 +1889,7 @@ function endGame() {
 }
 
 function replay() {
-  if (state.buffer) startFromBuffer(state.buffer);
+  if (state.buffer) startFromBuffer(state.buffer, state.lastAnalysis);
 }
 
 function backToMenu() {
@@ -2068,6 +2124,7 @@ function tick(now) {
         state.pIdx++;
         state.squash = L.types[state.pIdx] === 'bass' ? -0.30 : -0.20;
         state.pulse = Math.max(state.pulse, L.types[state.pIdx] === 'bass' ? 0.75 : 0.45);
+        L.landSquash[state.pIdx] = 0.8;
         getTilePos(state.pIdx, t, _tmpA);
         spawnRing(_tmpA, L.types[state.pIdx] === 'bass', L.colors[state.pIdx]);
       }
@@ -2075,7 +2132,7 @@ function tick(now) {
         state.pIdx = 0; state.menuTime = 0; t = 0;
         camTarget.set(L.x[0], L.y[0], L.z[0]);
       }
-      updatePlayerTransform(t);
+      updatePlayerTransform(t, dt);
       updateTiles(t, dt);
       updateTrail(dt);
     }
@@ -2088,29 +2145,42 @@ function tick(now) {
 
     readLiveAudio();
 
+    /* --- window closed with no tap → miss --- */
     while (judgePtr < L.beats.length && t > L.beats[judgePtr] + timingWindow(judgePtr)) {
       if (!judged[judgePtr]) {
         if (isRequiredBeat(judgePtr)) {
           judged[judgePtr] = 'miss';
-          onJudge('miss', 0, 0, judgePtr);
+          judgedOffset[judgePtr] = 0;
+          resolveJudge(judgePtr);
         } else {
           judged[judgePtr] = 'skip';
+          resolvedFlags[judgePtr] = true;
         }
       }
       judgePtr++;
     }
 
+    /* --- touchdown --- */
     while (state.pIdx + 1 < L.beats.length && t >= L.beats[state.pIdx + 1]) {
       state.pIdx++;
       const ty = L.types[state.pIdx];
       state.squash = ty === 'bass' ? -0.30 : ty === 'hat' ? -0.16 : -0.24;
       state.pulse = Math.max(state.pulse, ty === 'bass' ? 0.90 : ty === 'hat' ? 0.52 : 0.70);
+      state.landKick = 1;
+      if (L.landSquash) L.landSquash[state.pIdx] = 1;
       getTilePos(state.pIdx, t, _tmpA);
       const kind = judged[state.pIdx];
       spawnRing(_tmpA, kind === 'perfect' || kind === 'good' || ty === 'bass', L.colors[state.pIdx]);
+      state.camShake = Math.max(state.camShake, ty === 'bass' ? 0.008 : 0.004);
     }
 
-    updatePlayerTransform(t);
+    /* --- show the grade exactly on landing --- */
+    while (resolvePtr < L.beats.length && t >= L.beats[resolvePtr]) {
+      resolveJudge(resolvePtr);
+      resolvePtr++;
+    }
+
+    updatePlayerTransform(t, dt);
     updateTiles(t, dt);
     updateTrail(dt);
     updateCueRing();
@@ -2118,7 +2188,7 @@ function tick(now) {
     if (t > L.beats[L.beats.length - 1] + 2.8) endGame();
   } else if (state.mode === 'results') {
     t = state.frozenTime;
-    if (state.level) { updateTiles(t, dt); updatePlayerTransform(t); updateTrail(dt); }
+    if (state.level) { updateTiles(t, dt); updatePlayerTransform(t, dt); updateTrail(dt); }
     cueRing.visible = false;
   } else {
     if (state.level) updateTiles(worldTime, dt);
@@ -2134,6 +2204,7 @@ function tick(now) {
   deco.update(worldTime, dt, camTarget, state.pulse);
 
   state.pulse *= Math.exp(-dt * 4.2);
+  state.landKick *= Math.exp(-dt * 7);
 
   particleGroup.position.set(camTarget.x * 0.6, 0, camTarget.z * 0.6);
   const pBoost = 1 + state.pulse * 0.7 + state.live * 0.5;
@@ -2181,7 +2252,7 @@ function tick(now) {
 
     const vib = state.pulse;
     _tmpA.copy(camTarget).add(CAM_OFFSET);
-    _tmpA.y += vib * 0.35;
+    _tmpA.y += vib * 0.35 - state.landKick * 0.10;
     _tmpA.z -= vib * 0.25;
 
     if (state.mode === 'menu' || state.mode === 'loading') {
