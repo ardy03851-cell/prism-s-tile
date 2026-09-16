@@ -73,6 +73,7 @@
 
   <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+import { createDecoSystem } from './deco.js';
 
 /* ============================================================
    DOM
@@ -201,11 +202,12 @@ const particles = [];
   }
 }
 
+/* ---- Procedural scenery (deco.js) --------------------------- */
+const deco = createDecoSystem(scene, { density: 1 });
+
 /* ============================================================
    SURFACE SHINE  (injected into MeshToonMaterial)
    A soft band of light sweeps diagonally across the tile face.
-   Each tile owns its own uniforms so every tile shimmers on
-   its own phase — golden tiles sweep faster and brighter.
    ============================================================ */
 function patchShine(mesh) {
   const u = {
@@ -337,6 +339,7 @@ scene.add(cueRing);
    ============================================================ */
 const GOLD = new THREE.Color(0xffc93c);
 const GOLD_HOT = new THREE.Color(0xfff3c4);
+const GOLD_SOFT = new THREE.Color(0xffe9a8);
 
 const shockGeo = new THREE.RingGeometry(0.44, 0.60, 64);
 const shockPool = [];
@@ -395,7 +398,7 @@ function updateShocks(dt) {
 
 const shardGeo = new THREE.OctahedronGeometry(0.11, 0);
 const shardPool = [];
-for (let i = 0; i < 84; i++) {
+for (let i = 0; i < 96; i++) {
   const m = new THREE.Mesh(shardGeo, new THREE.MeshBasicMaterial({
     color: 0xffc93c, transparent: true, opacity: 0, depthWrite: false,
     blending: THREE.AdditiveBlending
@@ -441,17 +444,20 @@ function updateShards(dt) {
   }
 }
 
-function spawnShockwave(pos, big) {
-  spawnShock(pos, GOLD_HOT, {
-    delay: 0, dur: 0.52, from: 0.35, to: big ? 3.6 : 2.5, peak: big ? 0.95 : 0.55, y: 0.30
-  });
-  spawnShock(pos, GOLD, {
-    delay: 0.06, dur: 0.88, from: 0.22, to: big ? 4.6 : 3.2, peak: big ? 0.52 : 0.32, y: 0.32, rise: 0.45
-  });
-  spawnShock(pos, GOLD, {
-    delay: 0.02, dur: 0.66, from: 0.55, to: big ? 2.0 : 1.5, peak: big ? 0.60 : 0.36, y: 0.36, vert: true
-  });
-  burstShards(pos, big ? 18 : 10);
+/* Small pop for an ordinary perfect landing */
+function spawnMiniShockwave(pos) {
+  spawnShock(pos, WHITE, { delay: 0, dur: 0.36, from: 0.30, to: 1.55, peak: 0.34, y: 0.30 });
+  spawnShock(pos, theme.accent, { delay: 0.04, dur: 0.52, from: 0.20, to: 2.0, peak: 0.18, y: 0.32 });
+  burstShards(pos, 5);
+}
+
+/* Full golden shockwave — three rings + shards */
+function spawnGoldShockwave(pos) {
+  spawnShock(pos, GOLD_HOT, { delay: 0, dur: 0.52, from: 0.35, to: 3.8, peak: 0.95, y: 0.30 });
+  spawnShock(pos, GOLD, { delay: 0.06, dur: 0.92, from: 0.22, to: 5.0, peak: 0.55, y: 0.32, rise: 0.55 });
+  spawnShock(pos, GOLD, { delay: 0.02, dur: 0.70, from: 0.55, to: 2.3, peak: 0.62, y: 0.36, vert: true });
+  spawnShock(pos, GOLD_HOT, { delay: 0.14, dur: 1.05, from: 0.18, to: 2.6, peak: 0.40, y: 0.28 });
+  burstShards(pos, 20);
 }
 
 /* ============================================================
@@ -537,6 +543,9 @@ function applyTheme(th) {
   for (let i = 0; i < bars.length; i++) {
     bars[i].material.color.copy(th.tiles[i % th.tiles.length]);
   }
+
+  /* Scenery picks up the palette too */
+  deco.setTheme(th);
 
   const rs = document.documentElement.style;
   rs.setProperty('--ink', '#' + th.ink.getHexString());
@@ -818,7 +827,6 @@ function buildGrid(phaseSec, bpm, duration, bands, peaks) {
 
   const all = times.concat(extra).sort((a, b) => a - b);
 
-  /* Merge anything too close — keeps the path playable */
   const merged = [];
   for (const t of all) {
     if (merged.length && t - merged[merged.length - 1] < 0.30) continue;
@@ -1046,14 +1054,55 @@ function buildLevel(beatTimes, energies, seed, extra) {
     rot[i] = (rnd() - 0.5) * 0.55 + (type === 'hat' ? 0.22 : 0);
   }
 
-  /* ---- Golden tile bookkeeping ---- */
-  const golden = new Uint8Array(n);
+  /* ==========================================================
+     GOLDEN CANDIDATES
+     Only a small handful of beats per run are eligible to turn
+     gold. They are picked from the musically strongest moments
+     (heavy bass / strong snare) and kept well apart so each one
+     feels like an event rather than a constant.
+     ========================================================== */
+  const golden = new Uint8Array(n);        // 1 once the player has earned it
   const goldenT = new Float32Array(n).fill(-1);
+  const goldCand = new Uint8Array(n);      // 1 = eligible
+
+  if (n > 8) {
+    const want = clamp(Math.round(n / 26), 3, 7);
+    const minGap = Math.max(8, Math.round(n / (want + 1)));
+
+    const ranked = [];
+    for (let i = 1; i < n - 1; i++) {
+      const w = weights[i] != null ? weights[i] : 0.5;
+      const e = energies[i] != null ? energies[i] : 0.5;
+      const ty = types[i] || 'mid';
+      const bonus = ty === 'bass' ? 0.30 : ty === 'snare' ? 0.18 : ty === 'hat' ? -0.12 : 0;
+      ranked.push({ i, s: w * 0.55 + e * 0.45 + bonus });
+    }
+    ranked.sort((a, b) => b.s - a.s);
+
+    let placed = 0;
+    for (const r of ranked) {
+      if (placed >= want) break;
+      let ok = true;
+      for (let j = 0; j < n; j++) {
+        if (goldCand[j] && Math.abs(j - r.i) < minGap) { ok = false; break; }
+      }
+      if (!ok) continue;
+      goldCand[r.i] = 1;
+      placed++;
+    }
+
+    if (placed < 2) {
+      for (let k = 1; k <= 3; k++) {
+        const i = Math.round((n * k) / 4);
+        if (i > 0 && i < n - 1) goldCand[i] = 1;
+      }
+    }
+  }
 
   return {
     beats: beatTimes, energies, x, y, z, colors, count: n,
     types, weights, low: lows, high: highs, scale, rot,
-    golden, goldenT
+    golden, goldenT, goldCand
   };
 }
 
@@ -1076,6 +1125,7 @@ const state = {
 };
 let judged = [], judgePtr = 0;
 let score = 0, combo = 0, maxCombo = 0;
+let goldCount = 0;
 let counts = { perfect: 0, good: 0, ok: 0, miss: 0 };
 
 const camTarget = new THREE.Vector3();
@@ -1095,7 +1145,6 @@ function getTilePos(i, t, out) {
   return out;
 }
 
-/* ---- Timing windows: wider & friendlier than a pure "hard" rhythm game */
 function timingWindow(i) {
   const B = state.level.beats;
   const prev = i > 0 ? B[i] - B[i - 1] : 0.8;
@@ -1103,7 +1152,6 @@ function timingWindow(i) {
   return clamp(Math.min(prev, next) * 0.50, 0.16, 0.40);
 }
 
-/* Is this beat "loud enough" to count as a must-hit? */
 function isRequiredBeat(i) {
   const L = state.level;
   const w = L.weights[i] != null ? L.weights[i] : 0.5;
@@ -1132,10 +1180,11 @@ function buildMenuLevel() {
   state.squash = 0;
   camTarget.set(state.level.x[0], state.level.y[0], state.level.z[0]);
   camera.position.copy(camTarget).add(CAM_OFFSET);
+  deco.build(state.level, 0xBEA7);
 }
 
 /* ============================================================
-   PLAYER TRANSFORM — hop shape follows the beat type
+   PLAYER TRANSFORM
    ============================================================ */
 function updatePlayerTransform(t) {
   const L = state.level;
@@ -1150,13 +1199,11 @@ function updatePlayerTransform(t) {
     const nextType = L.types[i + 1] || 'mid';
     const nextW = L.weights[i + 1] != null ? L.weights[i + 1] : 0.5;
 
-    /* Heavier, more musical hop shape */
     let durFrac = 0.78;
-    if (nextType === 'bass') durFrac = 0.92;     // long floaty hold
-    else if (nextType === 'hat') durFrac = 0.52;  // snappy little flick
+    if (nextType === 'bass') durFrac = 0.92;
+    else if (nextType === 'hat') durFrac = 0.52;
     else if (nextType === 'snare') durFrac = 0.70;
 
-    /* A relaxed floor — the hop never feels frantic */
     const dur = clamp(interval * durFrac, 0.26, 1.25);
     const jumpStart = B[i + 1] - dur;
 
@@ -1256,8 +1303,8 @@ function updateTiles(t, dt) {
     const type = L.types[idx] || 'mid';
     const weight = L.weights[idx] != null ? L.weights[idx] : 0.5;
     const isGolden = L.golden[idx] === 1;
+    const isCand = !isGolden && L.goldCand[idx] === 1;
 
-    /* Golden age drives the "just earned it" flash */
     let gFlash = 0;
     if (isGolden) {
       if (L.goldenT[idx] < 0) L.goldenT[idx] = 0;
@@ -1290,12 +1337,15 @@ function updateTiles(t, dt) {
 
     m.rotation.y = L.rot[idx] + Math.sin(t * 0.45 + idx) * 0.05;
 
-    /* ---- Colour: gold overrides the theme palette ---- */
+    /* ---- Colour ---- */
     if (isGolden) {
       m.material.color.copy(GOLD).lerp(WHITE, clamp(0.12 + glow * 0.55 + gFlash * 0.65, 0, 0.92));
       m.material.emissive.copy(GOLD).multiplyScalar(
         0.26 + emissive + gFlash * 1.10 + pulse * 0.28
       );
+    } else if (isCand) {
+      m.material.color.copy(L.colors[idx]).lerp(GOLD_SOFT, 0.22 + glow * 0.20);
+      m.material.emissive.copy(GOLD_SOFT).multiplyScalar(0.04 + emissive * 0.9);
     } else {
       m.material.color.copy(L.colors[idx]).lerp(WHITE, Math.min(0.82, glow));
       m.material.emissive.copy(L.colors[idx]).multiplyScalar(emissive);
@@ -1304,11 +1354,13 @@ function updateTiles(t, dt) {
     /* ---- Surface shine sweep ---- */
     const sh = m.userData.shine;
     if (sh) {
-      sh.uShineT.value = worldTime * (isGolden ? 0.62 : 0.27) + idx * 0.19;
+      sh.uShineT.value = worldTime * (isGolden ? 0.62 : isCand ? 0.36 : 0.27) + idx * 0.19;
       sh.uShineAmt.value = isGolden
         ? 0.38 + gFlash * 1.15 + pulse * 0.20
-        : 0.085 + glow * 0.38 + (idx === state.pIdx ? pulse * 0.10 : 0);
-      sh.uShineCol.value.copy(isGolden ? GOLD_HOT : WHITE);
+        : isCand
+          ? 0.17 + glow * 0.42 + (idx === state.pIdx ? pulse * 0.10 : 0)
+          : 0.085 + glow * 0.38 + (idx === state.pIdx ? pulse * 0.10 : 0);
+      sh.uShineCol.value.copy(isGolden ? GOLD_HOT : isCand ? GOLD_SOFT : WHITE);
     }
   }
 }
@@ -1348,31 +1400,74 @@ function updateCueRing() {
 }
 
 /* ============================================================
-   FEEDBACK / HUD
+   FEEDBACK — animated, flavourful landing text
    ------------------------------------------------------------
-   FIXED: the landing text ("PERFECT" / "GOOD" / "OK" / "MISS")
-   used to be suppressed while FLOW was active, and a stale
-   timeout could wipe a fresh message. Now every judgment always
-   prints its grade, and the timer is guarded by a generation
-   counter so an old timeout can never clear a newer message.
+   Uses the Web Animations API on an inner wrapper so the
+   container's own positioning from style.css is never touched.
    ============================================================ */
-let fbTimer = null;
-let fbGen = 0;
-function showFeedback(text, cls) {
-  const gen = ++fbGen;
-  feedbackEl.textContent = text;
-  feedbackEl.className = '';
-  void feedbackEl.offsetWidth;                 // restart the animation
-  feedbackEl.className = 'show f-' + cls;
-  clearTimeout(fbTimer);
-  fbTimer = setTimeout(() => {
-    if (gen !== fbGen) return;                 // a newer message took over
-    feedbackEl.className = '';
-  }, 720);
+const FLAVORS = {
+  perfect: ['FLAWLESS', 'SILKY', 'ON POINT', 'SHARP', 'CLEAN', 'SMOOTH', 'NAILED IT', 'SNAP', 'BUTTER'],
+  good:    ['NICE', 'SOLID', 'TIGHT', 'COOL', 'SWEET', 'SNUG'],
+  ok:      ['OKAY', 'CLOSE', 'JUST IN', 'EDGE', 'PHEW'],
+  miss:    ['WHOOPS', 'MISSED', 'OUCH', 'NOPE', 'OFF BEAT'],
+  gold:    ['GOLD RUSH', 'PURE GOLD', 'JACKPOT', 'MINTED', 'ALL THAT GLITTERS', '24K']
+};
+
+function pickFlavor(kind, gold) {
+  const pool = gold ? FLAVORS.gold : (FLAVORS[kind] || FLAVORS.good);
+  return pool[(Math.random() * pool.length) | 0];
 }
 
-/* FIXED: the timing marker used to stay pinned on forever after
-   the first hit. It now fades itself out cleanly. */
+let fbTimer = null;
+let fbGen = 0;
+
+function showFeedback(text, cls, opts = {}) {
+  const gen = ++fbGen;
+  const gold = !!opts.gold;
+  const flavor = opts.flavor || pickFlavor(cls, gold);
+
+  feedbackEl.className = 'show f-' + cls + (gold ? ' f-gold' : '');
+  feedbackEl.innerHTML =
+    '<span class="fb-wrap" style="display:inline-block;will-change:transform,opacity">' +
+      '<span class="fb-main" style="display:block">' + text + '</span>' +
+      '<span class="fb-tail" style="display:block;font-size:0.34em;letter-spacing:0.22em;' +
+        'opacity:0.8;margin-top:0.15em;font-weight:700">' + flavor + '</span>' +
+    '</span>';
+
+  const wrap = feedbackEl.querySelector('.fb-wrap');
+  const tail = feedbackEl.querySelector('.fb-tail');
+  if (!wrap) return;
+
+  const tilt = (Math.random() * 2 - 1) * 9;
+  const dir = Math.random() < 0.5 ? -1 : 1;
+  const dur = gold ? 1150 : 820;
+
+  try {
+    wrap.animate([
+      { transform: 'scale(0.30) rotate(' + (tilt * 1.8) + 'deg)', opacity: 0 },
+      { transform: 'scale(1.30) rotate(' + (tilt * 0.35) + 'deg)', opacity: 1, offset: 0.20 },
+      { transform: 'scale(0.92) rotate(' + (tilt * -0.25) + 'deg)', opacity: 1, offset: 0.40 },
+      { transform: 'scale(1.08) rotate(' + (tilt * 0.12) + 'deg)', opacity: 1, offset: 0.58 },
+      { transform: 'scale(1.00) rotate(0deg)', opacity: 1, offset: 0.76 },
+      { transform: 'scale(' + (1 + dir * 0.16) + ') rotate(' + (dir * 5) + 'deg)', opacity: 0 }
+    ], { duration: dur, easing: 'cubic-bezier(.18,.9,.28,1)', fill: 'forwards' });
+
+    if (tail) {
+      tail.animate([
+        { transform: 'translateY(10px) scale(0.8)', opacity: 0 },
+        { transform: 'translateY(0) scale(1)', opacity: 0.85 }
+      ], { duration: 280, delay: 90, easing: 'cubic-bezier(.2,1.4,.4,1)', fill: 'forwards' });
+    }
+  } catch (e) { /* WAAPI unavailable — text still shows */ }
+
+  clearTimeout(fbTimer);
+  fbTimer = setTimeout(() => {
+    if (gen !== fbGen) return;
+    feedbackEl.className = '';
+    feedbackEl.innerHTML = '';
+  }, gold ? 1220 : 880);
+}
+
 let timingTimer = null;
 function scheduleTimingOff() {
   clearTimeout(timingTimer);
@@ -1387,6 +1482,13 @@ function popScore() {
   scoreEl.classList.remove('pop');
   void scoreEl.offsetWidth;
   scoreEl.classList.add('pop');
+  try {
+    scoreEl.animate([
+      { transform: 'scale(1)' },
+      { transform: 'scale(1.22)' },
+      { transform: 'scale(1)' }
+    ], { duration: 240, easing: 'cubic-bezier(.2,1.6,.4,1)' });
+  } catch (e) { }
 }
 
 function updateHUD() {
@@ -1438,31 +1540,42 @@ function onJudge(kind, offset, weight, idx) {
     const flowMult = state.flowOn ? 2 : 1;
     const typeMult = 1 + (weight || 0.5) * 0.6;
     const base = kind === 'perfect' ? 300 : kind === 'good' ? 150 : 60;
-    score += Math.round(base * comboMult * flowMult * typeMult);
+    let gained = Math.round(base * comboMult * flowMult * typeMult);
 
-    popScore();
-
-    /* ---- GOLDEN TILE: a perfect landing turns the tile to gold
-            and fires a shockwave out across its surface ---- */
+    /* ---- Golden tile: only pre-selected beats can turn gold ---- */
     let goldenFresh = false;
     if (kind === 'perfect' && state.level && idx != null && idx >= 0 && idx < state.level.count) {
       const L = state.level;
-      goldenFresh = L.golden[idx] === 0;
-      if (goldenFresh) {
+      if (L.goldCand[idx] === 1 && L.golden[idx] === 0) {
         L.golden[idx] = 1;
         L.goldenT[idx] = 0;
+        goldenFresh = true;
+        goldCount++;
       }
       getTilePos(idx, state.songTime, _wavePos);
-      spawnShockwave(_wavePos, goldenFresh);
-      state.camShake = Math.max(state.camShake, goldenFresh ? 0.021 : 0.011);
-      state.pulse = Math.max(state.pulse, goldenFresh ? 1.0 : 0.78);
+      if (goldenFresh) {
+        spawnGoldShockwave(_wavePos);
+        state.camShake = Math.max(state.camShake, 0.024);
+        state.pulse = Math.max(state.pulse, 1.05);
+        gained += Math.round(500 * comboMult * flowMult);
+      } else {
+        spawnMiniShockwave(_wavePos);
+        state.camShake = Math.max(state.camShake, 0.010);
+        state.pulse = Math.max(state.pulse, 0.72);
+      }
     }
+
+    score += gained;
+    popScore();
 
     /* ---- Always print the grade, FLOW or not ---- */
     if (kind === 'perfect') {
-      showFeedback('PERFECT', 'perfect');
+      showFeedback('PERFECT', 'perfect', { gold: goldenFresh });
       blip(1320, 0.040, 0.09);
-      if (goldenFresh) blip(1980, 0.035, 0.22);
+      if (goldenFresh) {
+        blip(1980, 0.035, 0.24);
+        setTimeout(() => blip(2640, 0.030, 0.30), 90);
+      }
     } else if (kind === 'good') {
       showFeedback('GOOD', 'good');
       blip(990, 0.030, 0.08);
@@ -1644,12 +1757,15 @@ async function startFromBuffer(buffer, precomputed) {
   state.flowOn = false;
   state.live = 0;
 
-  score = 0; combo = 0; maxCombo = 0;
+  score = 0; combo = 0; maxCombo = 0; goldCount = 0;
   counts = { perfect: 0, good: 0, ok: 0, miss: 0 };
   judged = new Array(state.level.beats.length).fill(null);
   judgePtr = 0;
   updateHUD();
   clearTiming();
+
+  /* Scenery scattered along the freshly built track */
+  deco.build(state.level, analysis.seed || 0xBEA7);
 
   stopPlayback(0);
   await ensureRunning();
@@ -1711,6 +1827,7 @@ function endGame() {
     <div class="stat"><b style="color:#4fb8a0">${counts.good}</b>GOOD</div>
     <div class="stat"><b style="color:#8a8ab0">${counts.ok}</b>OK</div>
     <div class="stat wide"><b>${maxCombo}</b>BEST COMBO</div>
+    <div class="stat wide"><b style="color:#e0a800">${goldCount}</b>GOLDEN TILES</div>
   `;
   showScreen(resultsEl);
 }
@@ -1971,8 +2088,6 @@ function tick(now) {
 
     readLiveAudio();
 
-    /* Auto-miss only beats that actually had musical content.
-       Silent grid slots simply pass without breaking combo. */
     while (judgePtr < L.beats.length && t > L.beats[judgePtr] + timingWindow(judgePtr)) {
       if (!judged[judgePtr]) {
         if (isRequiredBeat(judgePtr)) {
@@ -2014,6 +2129,9 @@ function tick(now) {
   updateShocks(dt);
   updateShards(dt);
   updateFlow(dt);
+
+  /* Scenery */
+  deco.update(worldTime, dt, camTarget, state.pulse);
 
   state.pulse *= Math.exp(-dt * 4.2);
 
