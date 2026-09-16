@@ -1,15 +1,16 @@
-// deco.js — procedural scenery for Prism s-tile
+// deco.js — voxel-style floating island scenery for Prism s-tile
 //
 // Exports createDecoSystem(scene, opts) which returns an object with:
-//   .setTheme(theme)             — recolour everything to match the palette
+//   .setTheme(theme)             — store theme reference
 //   .build(level, seed)          — clear + scatter deco along the track
-//   .update(worldTime, dt, cam, pulse) — animate deco (bob / spin)
+//   .update(worldTime, dt, cam, pulse) — animate deco (bob)
 //   .root                         — the parent THREE.Group (optional)
+//   .clear()                      — remove + dispose everything
 //
-// Every decoration is built from a small, hand-authored "builder" that
-// returns a Group plus an optional per-frame update. The builders cover
-// crystals, pillars, arches, floating rings, monoliths, stacks and more.
-// Layout is deterministic per song seed so replays look identical.
+// Every decoration is a hand-authored voxel-style floating island —
+// a grass-topped rock body with a curving tree, moss, hanging vines
+// and small blue flowers. Layout is deterministic per song seed so
+// replays look identical.
 
 import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 
@@ -29,6 +30,361 @@ function mulberry32(a) {
 const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
 
 /* ==================================================================
+   NATURAL VOXEL PALETTE
+   Colours picked directly from the reference art: bluish-grey stone,
+   bright yellow-green grass, warm brown wood, mid-green leaves,
+   yellow-green vines, small blue flowers.
+   ================================================================== */
+const PAL = {
+  stone:   [0x9aa0ad, 0x8a8f9c, 0x7a8090, 0xaab0bc, 0x9298a6],
+  stoneDk: [0x5a6070, 0x4a5060, 0x6a7080, 0x3a4050],
+  grass:   [0x78c452, 0x8ad35e, 0x66b046, 0x9be070, 0x5a9e3e],
+  moss:    [0x5a8a3a, 0x6a9a44, 0x4a7a30],
+  dirt:    [0x6a5a40, 0x7a6a4a, 0x5a4a30],
+  wood:    [0x8b6a3f, 0x9a7848, 0x7a5a30, 0xa08050, 0x6a4a28],
+  leaf:    [0x5cb84a, 0x6fca55, 0x4a9a3a, 0x82d96a, 0x9ae078],
+  leafDk:  [0x3a7a2a, 0x4a8a35, 0x2e6a22],
+  vine:    [0x9ac056, 0x88b048, 0xa8cc66, 0xb0d570],
+  flower:  [0x66aaff, 0x88bbff, 0x5599ee],
+  stem:    [0x5a8a3a, 0x4a7a30]
+};
+
+function pick(rng, arr) { return arr[(rng() * arr.length) | 0]; }
+
+/* Push a voxel into the flat array the InstancedMesh builder reads. */
+function pushVoxel(arr, x, y, z, s, c, syOverride) {
+  arr.push({
+    x, y, z,
+    s,
+    sy: syOverride != null ? syOverride : s,
+    c
+  });
+}
+
+/* ==================================================================
+   ISLAND BUILDERS
+   Each returns a flat array of voxel descriptors
+   { x, y, z, s, sy, c }. All coordinates are in local island space
+   with (0,0,0) at the top of the grass.
+   ================================================================== */
+
+/* --- Hero: grass-topped island with a big curving tree ------------- */
+function buildTreeIsland(rng) {
+  const voxels = [];
+
+  const R = 2.6 + rng() * 1.2;          // island radius
+  const VS = 0.72;                       // terrain voxel size
+  const botDepth = 1.8 + rng() * 1.4;   // deepest point of the base
+
+  const grid = Math.ceil(R / VS);
+
+  /* ---- 1. Terrain body (stone + grass cap) ---- */
+  for (let ix = -grid; ix <= grid; ix++) {
+    for (let iz = -grid; iz <= grid; iz++) {
+      const x = ix * VS;
+      const z = iz * VS;
+      const d = Math.sqrt(x * x + z * z);
+      if (d > R) continue;
+
+      const rr = d / R;
+
+      // Top: gentle dome, slightly raised at centre
+      const topNoise = Math.sin(x * 1.4 + 0.7) * Math.cos(z * 1.2) * 0.14;
+      const topY = 0.12 - rr * 0.18 + topNoise;
+
+      // Bottom: tapers to a jagged point
+      const taper = Math.pow(1 - rr, 0.75);
+      let botY = -botDepth * taper;
+      botY += Math.sin(x * 1.9 + z * 0.7) * 0.28;
+      if (rng() < 0.16) botY -= 0.45 + rng() * 0.9;   // spike
+
+      const layers = Math.max(1, Math.round((topY - botY) / VS));
+      for (let k = 0; k < layers; k++) {
+        const vy = botY + (k + 0.5) * (topY - botY) / layers;
+        const isTop = (k === layers - 1);
+
+        let c;
+        if (isTop) {
+          c = pick(rng, PAL.grass);
+        } else if (k === layers - 2 && rr > 0.55) {
+          c = pick(rng, rng() < 0.55 ? PAL.moss : PAL.grass);
+        } else if (vy > -0.55) {
+          c = pick(rng, PAL.stone);
+        } else {
+          c = pick(rng, PAL.stoneDk);
+        }
+
+        pushVoxel(voxels,
+          x + (rng() - 0.5) * VS * 0.12,
+          vy,
+          z + (rng() - 0.5) * VS * 0.12,
+          VS * (0.9 + rng() * 0.18),
+          c
+        );
+      }
+    }
+  }
+
+  /* ---- 2. Small rocks scattered on top of the grass ---- */
+  const nRocks = 3 + ((rng() * 5) | 0);
+  for (let i = 0; i < nRocks; i++) {
+    const a = rng() * Math.PI * 2;
+    const rr = rng() * R * 0.72;
+    const rx = Math.cos(a) * rr;
+    const rz = Math.sin(a) * rr;
+    const rw = 0.34 + rng() * 0.5;
+    const rh = 0.22 + rng() * 0.35;
+    pushVoxel(voxels, rx, 0.12 + rh * 0.5, rz, rw, pick(rng, PAL.stone), rh);
+    if (rng() < 0.4) {
+      pushVoxel(voxels,
+        rx + (rng() - 0.5) * 0.7, 0.12 + rh * 0.3,
+        rz + (rng() - 0.5) * 0.7,
+        rw * 0.6, pick(rng, PAL.stone), rh * 0.7);
+    }
+  }
+
+  /* ---- 3. The tree: curving trunk + branches + leaf canopy ---- */
+  const trunkX = (rng() - 0.5) * 0.5;
+  const trunkZ = (rng() - 0.5) * 0.5;
+  const trunkH = 2.5 + rng() * 1.6;
+  const trunkW = 0.44 + rng() * 0.14;
+  const woodVS = 0.42;
+  const tSteps = Math.max(4, Math.ceil(trunkH / woodVS));
+
+  const trunkPoints = [];
+  for (let k = 0; k < tSteps; k++) {
+    const u = k / (tSteps - 1);
+    const y = u * trunkH;
+    const cx = trunkX + Math.sin(y * 0.85) * 0.20;
+    const cz = trunkZ + Math.cos(y * 0.65) * 0.16;
+    const w = trunkW * (1 - u * 0.32);
+    trunkPoints.push({ x: cx, y, z: cz, w });
+
+    const c = pick(rng, PAL.wood);
+    pushVoxel(voxels, cx, y + 0.05, cz, w, c);
+
+    // occasionally thicken the trunk
+    if (u < 0.3 && rng() < 0.55) {
+      pushVoxel(voxels,
+        cx + (rng() - 0.5) * w * 0.8,
+        y + 0.05,
+        cz + (rng() - 0.5) * w * 0.8,
+        w * 0.75, c);
+    }
+  }
+
+  // Branches from the upper half of the trunk, curving outward
+  const nBranch = 3 + ((rng() * 3) | 0);
+  const branchTips = [];
+  for (let i = 0; i < nBranch; i++) {
+    const startIdx = Math.floor(tSteps * (0.52 + rng() * 0.36));
+    const sp = trunkPoints[Math.min(tSteps - 1, startIdx)];
+    const angle = (i / nBranch) * Math.PI * 2 + rng() * 0.8;
+    const bLen = 0.85 + rng() * 0.95;
+    const endX = sp.x + Math.cos(angle) * bLen;
+    const endZ = sp.z + Math.sin(angle) * bLen;
+    const endY = sp.y + 0.55 + rng() * 0.7;
+
+    const bSteps = 4;
+    for (let k = 0; k <= bSteps; k++) {
+      const u = k / bSteps;
+      // ease the branch outward
+      const eu = u * u * (3 - 2 * u);
+      const vx = sp.x + (endX - sp.x) * eu;
+      const vz = sp.z + (endZ - sp.z) * eu;
+      const vy = sp.y + (endY - sp.y) * u;
+      const w = trunkW * 0.82 * (1 - u * 0.45);
+      pushVoxel(voxels, vx, vy, vz, w, pick(rng, PAL.wood));
+    }
+    branchTips.push({ x: endX, y: endY, z: endZ });
+  }
+
+  // Canopy — a solid squashed sphere of leaf voxels
+  const canopyR = 1.85 + rng() * 1.05;
+  const cx0 = trunkX + (rng() - 0.5) * 0.4;
+  const cz0 = trunkZ + (rng() - 0.5) * 0.4;
+  const cy0 = trunkH + 0.55 + rng() * 0.5;
+  const cVS = 0.74;
+  const cGrid = Math.ceil(canopyR / cVS);
+  const squashY = 0.72;
+
+  for (let ix = -cGrid; ix <= cGrid; ix++) {
+    for (let iy = -cGrid; iy <= cGrid; iy++) {
+      for (let iz = -cGrid; iz <= cGrid; iz++) {
+        const x = ix * cVS;
+        const y = iy * cVS;
+        const z = iz * cVS;
+        const dx = x, dy = y / squashY, dz = z;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (d > canopyR) continue;
+
+        // Leave a hollow for the trunk to enter the underside
+        if (y < -canopyR * 0.55 && Math.abs(x) < 0.85 && Math.abs(z) < 0.85) continue;
+
+        // Slight dome bias: skip bottom corners
+        if (y < -canopyR * 0.3 && d > canopyR * 0.85) continue;
+
+        const edge = d > canopyR * 0.72;
+        const c = pick(rng, edge ? PAL.leafDk : PAL.leaf);
+
+        pushVoxel(voxels,
+          cx0 + x + (rng() - 0.5) * 0.12,
+          cy0 + y * squashY + (rng() - 0.5) * 0.12,
+          cz0 + z + (rng() - 0.5) * 0.12,
+          cVS * (0.85 + rng() * 0.30),
+          c
+        );
+      }
+    }
+  }
+
+  // Fill a little extra leaf near branch tips
+  for (const bt of branchTips) {
+    for (let k = 0; k < 3; k++) {
+      pushVoxel(voxels,
+        bt.x + (rng() - 0.5) * 0.85,
+        bt.y + (rng() - 0.35) * 0.65,
+        bt.z + (rng() - 0.5) * 0.85,
+        cVS * 0.8, pick(rng, PAL.leaf));
+    }
+  }
+
+  /* ---- 4. Vines hanging from the rim ---- */
+  const nVines = 2 + ((rng() * 3) | 0);
+  for (let i = 0; i < nVines; i++) {
+    const a = rng() * Math.PI * 2;
+    const vr = R * (0.68 + rng() * 0.25);
+    const vx = Math.cos(a) * vr;
+    const vz = Math.sin(a) * vr;
+    const vLen = 0.9 + rng() * 1.5;
+    const step = 0.36;
+    const steps = Math.ceil(vLen / step);
+    const c = pick(rng, PAL.vine);
+    for (let k = 0; k < steps; k++) {
+      const y = -0.08 - k * step;
+      const sw = Math.sin(k * 0.7 + i * 1.3) * 0.06;
+      pushVoxel(voxels, vx + sw, y, vz + sw * 0.7, 0.20 + rng() * 0.06, c);
+    }
+  }
+
+  /* ---- 5. Small blue flowers on the grass ---- */
+  const nFlowers = 3 + ((rng() * 4) | 0);
+  for (let i = 0; i < nFlowers; i++) {
+    const a = rng() * Math.PI * 2;
+    const rr = rng() * R * 0.72;
+    const fx = Math.cos(a) * rr;
+    const fz = Math.sin(a) * rr;
+    pushVoxel(voxels, fx, 0.26, fz, 0.11, pick(rng, PAL.stem));
+    pushVoxel(voxels, fx, 0.40, fz, 0.18, pick(rng, PAL.flower));
+  }
+
+  return voxels;
+}
+
+/* --- Mid: small mossy rock island (no tree) ------------------------ */
+function buildRockIsland(rng) {
+  const voxels = [];
+  const R = 1.3 + rng() * 1.0;
+  const VS = 0.58;
+  const botDepth = 1.1 + rng() * 1.0;
+  const grid = Math.ceil(R / VS);
+
+  for (let ix = -grid; ix <= grid; ix++) {
+    for (let iz = -grid; iz <= grid; iz++) {
+      const x = ix * VS;
+      const z = iz * VS;
+      const d = Math.sqrt(x * x + z * z);
+      if (d > R) continue;
+      const rr = d / R;
+
+      const topY = 0.08 - rr * 0.12 + Math.sin(x * 1.7) * Math.cos(z * 1.4) * 0.12;
+      const taper = Math.pow(1 - rr, 0.72);
+      let botY = -botDepth * taper;
+      botY += Math.sin(x * 2.1 + z) * 0.22;
+      if (rng() < 0.22) botY -= 0.35 + rng() * 0.6;
+
+      const layers = Math.max(1, Math.round((topY - botY) / VS));
+      for (let k = 0; k < layers; k++) {
+        const vy = botY + (k + 0.5) * (topY - botY) / layers;
+        const isTop = (k === layers - 1);
+        let c;
+        if (isTop) c = pick(rng, PAL.moss);
+        else if (vy > -0.5) c = pick(rng, PAL.stone);
+        else c = pick(rng, PAL.stoneDk);
+
+        pushVoxel(voxels,
+          x + (rng() - 0.5) * 0.08, vy,
+          z + (rng() - 0.5) * 0.08,
+          VS * (0.9 + rng() * 0.2), c);
+      }
+    }
+  }
+
+  // Rocks on top
+  const nRocks = 2 + ((rng() * 3) | 0);
+  for (let i = 0; i < nRocks; i++) {
+    const a = rng() * Math.PI * 2;
+    const rr = rng() * R * 0.7;
+    const rw = 0.24 + rng() * 0.38;
+    const rh = 0.18 + rng() * 0.28;
+    pushVoxel(voxels,
+      Math.cos(a) * rr, 0.08 + rh * 0.5, Math.sin(a) * rr,
+      rw, pick(rng, PAL.stone), rh);
+  }
+
+  // Grass tufts
+  const nTufts = 4 + ((rng() * 4) | 0);
+  for (let i = 0; i < nTufts; i++) {
+    const a = rng() * Math.PI * 2;
+    const rr = rng() * R * 0.75;
+    pushVoxel(voxels,
+      Math.cos(a) * rr, 0.18, Math.sin(a) * rr,
+      0.18 + rng() * 0.10, pick(rng, PAL.grass), 0.32);
+  }
+
+  // Occasional tiny flower
+  if (rng() < 0.55) {
+    const a = rng() * Math.PI * 2;
+    const rr = rng() * R * 0.7;
+    const fx = Math.cos(a) * rr, fz = Math.sin(a) * rr;
+    pushVoxel(voxels, fx, 0.22, fz, 0.09, pick(rng, PAL.stem));
+    pushVoxel(voxels, fx, 0.36, fz, 0.15, pick(rng, PAL.flower));
+  }
+
+  return voxels;
+}
+
+/* --- Tiny: single mossy rock -------------------------------------- */
+function buildTinyRock(rng) {
+  const voxels = [];
+  const R = 0.65 + rng() * 0.5;
+  const VS = 0.42;
+  const grid = Math.ceil(R / VS);
+
+  for (let ix = -grid; ix <= grid; ix++) {
+    for (let iz = -grid; iz <= grid; iz++) {
+      const x = ix * VS;
+      const z = iz * VS;
+      const d = Math.sqrt(x * x + z * z);
+      if (d > R) continue;
+      const rr = d / R;
+
+      const topY = 0.05 - rr * 0.2;
+      let botY = -0.75 * Math.pow(1 - rr, 0.8) - rng() * 0.3;
+
+      const layers = Math.max(1, Math.round((topY - botY) / VS));
+      for (let k = 0; k < layers; k++) {
+        const vy = botY + (k + 0.5) * (topY - botY) / layers;
+        const isTop = (k === layers - 1);
+        const c = isTop ? pick(rng, PAL.moss) : pick(rng, PAL.stone);
+        pushVoxel(voxels, x, vy, z, VS * 0.95, c);
+      }
+    }
+  }
+  return voxels;
+}
+
+/* ==================================================================
    createDecoSystem
    ================================================================== */
 export function createDecoSystem(scene, opts = {}) {
@@ -38,7 +394,7 @@ export function createDecoSystem(scene, opts = {}) {
   root.name = 'decoRoot';
   scene.add(root);
 
-  /* ---- Shared toon ramp (same 3-tone ramp the game uses) ---- */
+  /* ---- Shared 3-tone toon ramp ---- */
   const gradData = new Uint8Array([104, 178, 255]);
   const gradientMap = new THREE.DataTexture(gradData, 3, 1, THREE.RedFormat);
   gradientMap.minFilter = THREE.NearestFilter;
@@ -46,376 +402,88 @@ export function createDecoSystem(scene, opts = {}) {
   gradientMap.generateMipmaps = false;
   gradientMap.needsUpdate = true;
 
-  /* ---- Shared outline material (back-face silhouette trick) ---- */
-  const outlineMat = new THREE.MeshBasicMaterial({
-    color: 0x33304a,
-    side: THREE.BackSide,
-    depthWrite: true
+  /* ---- Shared unit cube + material (instanceColor does the work) ---- */
+  const cubeGeo = new THREE.BoxGeometry(1, 1, 1);
+  const voxelMat = new THREE.MeshToonMaterial({
+    color: 0xffffff,
+    gradientMap
   });
-
-  /* ---- Geometry cache — everything is a unit shape, scaled per instance ---- */
-  const geos = {
-    octa:   new THREE.OctahedronGeometry(1, 0),
-    icosa:  new THREE.IcosahedronGeometry(1, 0),
-    tetra:  new THREE.TetrahedronGeometry(1, 0),
-    box:    new THREE.BoxGeometry(1, 1, 1),
-    cyl:    new THREE.CylinderGeometry(1, 1, 1, 10),
-    cone:   new THREE.ConeGeometry(1, 1, 7),
-    sphere: new THREE.SphereGeometry(1, 12, 8),
-    torus:  new THREE.TorusGeometry(1, 0.16, 8, 24),
-    torusHalf: new THREE.TorusGeometry(1, 0.14, 8, 22, Math.PI),
-    ring:   new THREE.TorusGeometry(1, 0.06, 8, 32)
-  };
 
   /* ---- State ---- */
   let theme = null;
   let items = [];
   let rng = mulberry32(1);
 
+  /* ---- Build one InstancedMesh from an array of voxel descriptors ---- */
+  const _m = new THREE.Matrix4();
+  const _q = new THREE.Quaternion();
+  const _p = new THREE.Vector3();
+  const _s = new THREE.Vector3();
+  const _c = new THREE.Color();
+
+  function makeInstanced(voxels) {
+    if (!voxels.length) return null;
+    const mesh = new THREE.InstancedMesh(cubeGeo, voxelMat, voxels.length);
+
+    for (let i = 0; i < voxels.length; i++) {
+      const v = voxels[i];
+      _p.set(v.x, v.y, v.z);
+      _s.set(v.s, v.sy, v.s);
+      _m.compose(_p, _q, _s);
+      mesh.setMatrixAt(i, _m);
+      _c.setHex(v.c);
+      mesh.setColorAt(i, _c);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+
+    // Let three.js cull it correctly; if the method isn't available
+    // in this build, disable culling to be safe.
+    if (typeof mesh.computeBoundingSphere === 'function') {
+      try { mesh.computeBoundingSphere(); } catch (e) { /* noop */ }
+    } else {
+      mesh.frustumCulled = false;
+    }
+
+    return mesh;
+  }
+
   /* ------------------------------------------------------------------
-     Helpers
+     PUBLIC: setTheme
+     Islands use natural colours, so we only remember the theme for
+     potential future tinting. Nothing else to do.
      ------------------------------------------------------------------ */
-
-  function toonMat(color) {
-    return new THREE.MeshToonMaterial({
-      color: color.clone(),
-      gradientMap
-    });
-  }
-
-  // Attach a slightly-larger back-face copy as a child to give the
-  // shape a clean illustrated outline.
-  function outlineFor(mesh, geo, factor) {
-    const o = new THREE.Mesh(geo, outlineMat);
-    o.scale.setScalar(factor != null ? factor : 1.06);
-    mesh.add(o);
-  }
-
-  /* ==================================================================
-     BUILDERS
-     Each builder takes (color, rng) and returns
-       { mesh: THREE.Group|THREE.Mesh,
-         float: bool,               // true → placed up in the air
-         update: fn(t) | null }     // optional per-frame animation
-     ================================================================== */
-
-  /* --- 1. Crystal cluster — a small fan of tilted octahedra --- */
-  function bCrystal(color, rng) {
-    const g = new THREE.Group();
-    const n = 2 + Math.floor(rng() * 3);
-    for (let i = 0; i < n; i++) {
-      const h = 1.6 + rng() * 3.4;
-      const w = 0.38 + rng() * 0.48;
-      const m = new THREE.Mesh(geos.octa, toonMat(color));
-      m.scale.set(w, h, w);
-      m.position.set((rng() - 0.5) * 1.4, h * 0.5, (rng() - 0.5) * 1.4);
-      m.rotation.y = rng() * Math.PI * 2;
-      m.rotation.z = (rng() - 0.5) * 0.20;
-      outlineFor(m, geos.octa, 1.05);
-      g.add(m);
-    }
-    return { mesh: g, float: false };
-  }
-
-  /* --- 2. Pillar — a tall column with a wider cap --- */
-  function bPillar(color, rng) {
-    const g = new THREE.Group();
-    const h = 3.5 + rng() * 6.0;
-    const w = 0.65 + rng() * 0.60;
-
-    const body = new THREE.Mesh(geos.box, toonMat(color));
-    body.scale.set(w, h, w);
-    body.position.y = h / 2;
-    outlineFor(body, geos.box, 1.04);
-    g.add(body);
-
-    const capCol = color.clone().offsetHSL(0, 0.04, 0.12);
-    const cap = new THREE.Mesh(geos.box, toonMat(capCol));
-    cap.scale.set(w * 1.42, 0.5, w * 1.42);
-    cap.position.y = h + 0.22;
-    outlineFor(cap, geos.box, 1.05);
-    g.add(cap);
-
-    return { mesh: g, float: false };
-  }
-
-  /* --- 3. Arch — a half-torus standing on the ground --- */
-  function bArch(color, rng) {
-    const g = new THREE.Group();
-    const r = 1.6 + rng() * 1.8;
-
-    const arch = new THREE.Mesh(geos.torusHalf, toonMat(color));
-    arch.scale.setScalar(r);
-    arch.position.y = r * 0.9;
-    outlineFor(arch, geos.torusHalf, 1.10);
-    g.add(arch);
-
-    // Optional pendant hanging inside the arch
-    if (rng() < 0.55) {
-      const orn = new THREE.Mesh(geos.octa, toonMat(color.clone().offsetHSL(0, 0.05, 0.14)));
-      orn.scale.setScalar(0.42 + rng() * 0.35);
-      orn.position.y = r * 0.65;
-      outlineFor(orn, geos.octa, 1.08);
-      g.add(orn);
-    }
-    return { mesh: g, float: false };
-  }
-
-  /* --- 4. Orb ring — a floating sphere with a tilted ring --- */
-  function bOrbRing(color, rng) {
-    const g = new THREE.Group();
-    const r = 1.1 + rng() * 1.2;
-
-    const orb = new THREE.Mesh(geos.sphere, toonMat(color));
-    orb.scale.setScalar(r * 0.55);
-    outlineFor(orb, geos.sphere, 1.06);
-    g.add(orb);
-
-    const ring = new THREE.Mesh(geos.ring, toonMat(color.clone().offsetHSL(0, -0.08, 0.08)));
-    ring.scale.setScalar(r);
-    ring.rotation.x = Math.PI / 2 + (rng() - 0.5) * 0.5;
-    ring.rotation.z = (rng() - 0.5) * 0.7;
-    g.add(ring);
-
-    const spin = 0.30 + rng() * 0.55;
-    const orbSpin = 0.15 + rng() * 0.30;
-    return {
-      mesh: g,
-      float: true,
-      update: (t) => {
-        ring.rotation.z += 0.006 * spin;
-        orb.rotation.y  += 0.004 * orbSpin;
-      }
-    };
-  }
-
-  /* --- 5. Spire — a lone cone shooting out of the ground --- */
-  function bSpire(color, rng) {
-    const g = new THREE.Group();
-    const h = 2.8 + rng() * 5.5;
-    const m = new THREE.Mesh(geos.cone, toonMat(color));
-    m.scale.set(0.65 + rng() * 0.4, h, 0.65 + rng() * 0.4);
-    m.position.y = h / 2;
-    outlineFor(m, geos.cone, 1.06);
-    g.add(m);
-    return { mesh: g, float: false };
-  }
-
-  /* --- 6. Stack — a tower of shrinking cubes --- */
-  function bStack(color, rng) {
-    const g = new THREE.Group();
-    const n = 2 + Math.floor(rng() * 3);
-    let y = 0;
-    for (let i = 0; i < n; i++) {
-      const s = 1.25 - i * 0.16 + rng() * 0.28;
-      const col = color.clone().offsetHSL(0, 0, i * 0.035);
-      const m = new THREE.Mesh(geos.box, toonMat(col));
-      m.scale.set(s, 0.58, s);
-      m.position.y = y + 0.29;
-      m.rotation.y = rng() * Math.PI * 0.5;
-      outlineFor(m, geos.box, 1.05);
-      g.add(m);
-      y += 0.58;
-    }
-    return { mesh: g, float: false };
-  }
-
-  /* --- 7. Diamond on a pole — classic landmark shape --- */
-  function bDiamondPole(color, rng) {
-    const g = new THREE.Group();
-    const h = 2.0 + rng() * 3.2;
-    const poleCol = color.clone().offsetHSL(0, -0.16, -0.06);
-
-    const pole = new THREE.Mesh(geos.cyl, toonMat(poleCol));
-    pole.scale.set(0.11, h, 0.11);
-    pole.position.y = h / 2;
-    outlineFor(pole, geos.cyl, 1.14);
-    g.add(pole);
-
-    const d = new THREE.Mesh(geos.octa, toonMat(color));
-    d.scale.setScalar(0.65 + rng() * 0.45);
-    d.position.y = h + 0.6;
-    outlineFor(d, geos.octa, 1.06);
-    g.add(d);
-
-    const spin = 0.55 + rng() * 0.7;
-    return {
-      mesh: g,
-      float: false,
-      update: (t) => { d.rotation.y = t * spin; }
-    };
-  }
-
-  /* --- 8. Tetrahedron pile — a scattered cluster --- */
-  function bTets(color, rng) {
-    const g = new THREE.Group();
-    const n = 3 + Math.floor(rng() * 4);
-    for (let i = 0; i < n; i++) {
-      const s = 0.5 + rng() * 0.85;
-      const col = color.clone().offsetHSL(0, 0, (rng() - 0.5) * 0.10);
-      const m = new THREE.Mesh(geos.tetra, toonMat(col));
-      m.scale.setScalar(s);
-      m.position.set((rng() - 0.5) * 2.6, s * 0.55, (rng() - 0.5) * 2.6);
-      m.rotation.set(rng() * 6, rng() * 6, rng() * 6);
-      outlineFor(m, geos.tetra, 1.06);
-      g.add(m);
-    }
-    return { mesh: g, float: false };
-  }
-
-  /* --- 9. Float ring — a big rotating torus in the air --- */
-  function bFloatRing(color, rng) {
-    const g = new THREE.Group();
-    const r = 1.4 + rng() * 1.6;
-
-    const m = new THREE.Mesh(geos.torus, toonMat(color));
-    m.scale.setScalar(r);
-    m.rotation.x = Math.PI / 2 + (rng() - 0.5) * 0.4;
-    outlineFor(m, geos.torus, 1.08);
-    g.add(m);
-
-    const tilt = (rng() - 0.5) * 0.4;
-    const spin = 0.35 + rng() * 0.45;
-    return {
-      mesh: g,
-      float: true,
-      update: (t) => {
-        m.rotation.y = t * spin;
-        m.rotation.z = tilt + Math.sin(t * 0.6) * 0.25;
-      }
-    };
-  }
-
-  /* --- 10. Monolith — a thin rectangular slab --- */
-  function bMonolith(color, rng) {
-    const g = new THREE.Group();
-    const h = 4.5 + rng() * 4.5;
-    const w = 0.55 + rng() * 0.55;
-    const d = 0.35 + rng() * 0.45;
-
-    const m = new THREE.Mesh(geos.box, toonMat(color));
-    m.scale.set(w, h, d);
-    m.position.y = h / 2;
-    m.rotation.y = rng() * Math.PI;
-    outlineFor(m, geos.box, 1.04);
-    g.add(m);
-
-    return { mesh: g, float: false };
-  }
-
-  /* --- 11. Icosahedron cluster — low rounded boulders --- */
-  function bBoulders(color, rng) {
-    const g = new THREE.Group();
-    const n = 2 + Math.floor(rng() * 3);
-    for (let i = 0; i < n; i++) {
-      const s = 0.9 + rng() * 1.1;
-      const col = color.clone().offsetHSL(0, -0.05, (rng() - 0.5) * 0.10);
-      const m = new THREE.Mesh(geos.icosa, toonMat(col));
-      m.scale.set(s, s * (0.7 + rng() * 0.4), s);
-      m.position.set((rng() - 0.5) * 2.4, s * 0.5, (rng() - 0.5) * 2.4);
-      m.rotation.set(rng() * 6, rng() * 6, rng() * 6);
-      outlineFor(m, geos.icosa, 1.06);
-      g.add(m);
-    }
-    return { mesh: g, float: false };
-  }
-
-  /* --- 12. Sky lantern — a small orb floating high above --- */
-  function bSkyLantern(color, rng) {
-    const g = new THREE.Group();
-    const r = 0.45 + rng() * 0.35;
-
-    const orb = new THREE.Mesh(geos.sphere, toonMat(color));
-    orb.scale.setScalar(r);
-    outlineFor(orb, geos.sphere, 1.10);
-    g.add(orb);
-
-    // A little dark tassel below
-    const t = new THREE.Mesh(geos.cyl, toonMat(color.clone().offsetHSL(0, -0.2, -0.25)));
-    t.scale.set(0.06, 0.55, 0.06);
-    t.position.y = -r - 0.30;
-    g.add(t);
-
-    const spin = 0.6 + rng() * 0.6;
-    return {
-      mesh: g,
-      float: true,
-      update: (t) => { orb.rotation.y = t * spin; }
-    };
-  }
-
-  /* ---- The full menu of builders ---- */
-  const BUILDERS = [
-    bCrystal,
-    bPillar,
-    bArch,
-    bOrbRing,
-    bSpire,
-    bStack,
-    bDiamondPole,
-    bTets,
-    bFloatRing,
-    bMonolith,
-    bBoulders,
-    bSkyLantern
-  ];
-
-  /* ==================================================================
-     PUBLIC API
-     ================================================================== */
-
-  /* -- Recolour every existing decoration to the current palette -- */
   function setTheme(th) {
     theme = th;
-    outlineMat.color.copy(th.ink);
-
-    if (!items.length) return;
-
-    const recolRnd = mulberry32((th.seed >>> 0) ^ 0x77aa11);
-    const pal = th.tiles;
-
-    for (const it of items) {
-      const col = pal[Math.floor(recolRnd() * pal.length)];
-      it.mesh.traverse((o) => {
-        if (!o.isMesh) return;
-        const m = o.material;
-        if (!m || m === outlineMat) return;
-        if (!m.color) return;
-        m.color.copy(col);
-      });
-    }
   }
 
-  /* -- Remove every decoration and dispose materials -- */
+  /* ------------------------------------------------------------------
+     PUBLIC: clear
+     ------------------------------------------------------------------ */
   function clearAll() {
-    for (const it of items) {
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
       root.remove(it.mesh);
-      it.mesh.traverse((o) => {
-        if (o.isMesh && o.material && o.material !== outlineMat) {
-          o.material.dispose();
-        }
-      });
+      try { it.mesh.dispose(); } catch (e) { /* noop */ }
     }
     items.length = 0;
   }
 
-  /* -- Scatter fresh scenery along a level -- */
+  /* ------------------------------------------------------------------
+     PUBLIC: build
+     Scatter voxel islands around the track, some floating high, some
+     near the ground, some mid-height. Deterministic per seed.
+     ------------------------------------------------------------------ */
   function build(level, seed) {
     clearAll();
-    if (!theme) return;
     if (!level || level.count < 2) return;
 
     rng = mulberry32((seed >>> 0) ^ 0xC0FFEE);
 
-    const pal = theme.tiles;
     const N = level.count;
+    // Scenery count scales with track length but stays bounded.
+    const total = clamp(Math.round(N * 0.35 * density), 4, 30);
 
-    // How many pieces of scenery to place. Scales with song length
-    // but stays bounded so we never wreck performance on a long mix.
-    const total = clamp(Math.round(N * 0.85 * density), 8, 120);
-
-    // Walk the track and drop scenery to alternating sides, with a
-    // sprinkle of far-away silhouettes and a few high sky lanterns.
     for (let i = 0; i < total; i++) {
       const anchor = Math.min(N - 1, Math.floor((i / total) * N));
 
@@ -423,80 +491,72 @@ export function createDecoSystem(scene, opts = {}) {
       const by = level.y[anchor];
       const bz = level.z[anchor];
 
-      // Every third item is a distant silhouette — pushed far out
-      // laterally and slightly ahead/behind, for a sense of scale.
-      const isFar    = (i % 3 === 2);
-      const isSky    = !isFar && rng() < 0.10;
+      /* --- Pick a builder --- */
+      const roll = rng();
+      let voxels;
+      let baseScale;
+      if (roll < 0.55) {
+        voxels = buildTreeIsland(rng);
+        baseScale = 0.80 + rng() * 0.55;
+      } else if (roll < 0.85) {
+        voxels = buildRockIsland(rng);
+        baseScale = 0.75 + rng() * 0.55;
+      } else {
+        voxels = buildTinyRock(rng);
+        baseScale = 0.65 + rng() * 0.55;
+      }
 
+      const mesh = makeInstanced(voxels);
+      if (!mesh) continue;
+
+      /* --- Position around the track, alternating sides --- */
       const sideSign = (i % 2 === 0) ? 1 : -1;
-      let sideDist;
-      if (isFar)      sideDist = 26 + rng() * 22;
-      else if (isSky) sideDist = 10 + rng() * 10;
-      else            sideDist = 6 + rng() * 12;
+      const sideDist = 7 + rng() * 12;
+      const px = bx + sideSign * sideDist + (rng() - 0.5) * 4;
+      const pz = bz + (rng() - 0.5) * 7;
 
-      const px = bx + sideSign * sideDist + (rng() - 0.5) * 4.0;
-      const pz = bz + (rng() - 0.5) * 7.0;
-
-      // Pick a builder — far ones are only the tall / big shapes so
-      // they read clearly through the fog.
-      let builder;
-      if (isFar) {
-        builder = [bPillar, bMonolith, bSpire, bArch][Math.floor(rng() * 4)];
-      } else if (isSky) {
-        builder = [bSkyLantern, bFloatRing, bOrbRing][Math.floor(rng() * 3)];
-      } else {
-        builder = BUILDERS[Math.floor(rng() * BUILDERS.length)];
-      }
-
-      const color = pal[Math.floor(rng() * pal.length)].clone();
-      const built = builder(color, rng);
-      const g = built.mesh;
-
-      // Vertical placement
+      /* --- Height band --- */
+      const heightRoll = rng();
       let py;
-      if (built.float) {
-        py = 3.5 + rng() * 6.5;            // hover in the air
-      } else if (isFar) {
-        py = -0.4;
+      if (heightRoll < 0.55) {
+        // floating high, above the track
+        py = 3.0 + rng() * 5.0 + by * 0.5;
+      } else if (heightRoll < 0.82) {
+        // mid-height, near the track
+        py = 1.2 + rng() * 2.0 + by * 0.3;
       } else {
-        py = -0.4 + (rng() - 0.5) * 0.6;   // sit on the ground with a bit of jitter
+        // close to the ground
+        py = -1.6 + rng() * 1.4;
       }
-      // Nudge up if the track itself is already elevated there
-      if (!built.float && !isFar) py += Math.min(0.6, by * 0.10);
 
-      g.position.set(px, py, pz);
-      g.rotation.y = rng() * Math.PI * 2;
+      mesh.position.set(px, py, pz);
+      mesh.rotation.y = rng() * Math.PI * 2;
+      mesh.scale.setScalar(baseScale);
 
-      // Scale: near items a little bigger, far items very big
-      let s;
-      if (isFar)      s = 2.0 + rng() * 1.6;
-      else if (isSky) s = 0.85 + rng() * 0.55;
-      else            s = 0.75 + rng() * 0.95;
-      g.scale.setScalar(s);
-
-      root.add(g);
+      root.add(mesh);
 
       items.push({
-        mesh: g,
+        mesh,
         baseY: py,
-        bobAmp:   built.float ? (0.20 + rng() * 0.50) : (0.04 + rng() * 0.14),
-        bobSpeed: 0.30 + rng() * 0.80,
+        bobAmp: 0.14 + rng() * 0.42,
+        bobSpeed: 0.22 + rng() * 0.5,
         bobPhase: rng() * Math.PI * 2,
-        update:   built.update || null,
-        far:      isFar
+        float: heightRoll < 0.82
       });
     }
   }
 
-  /* -- Per-frame animation (bob + gentle spin) -- */
+  /* ------------------------------------------------------------------
+     PUBLIC: update
+     Gentle vertical bob; cull to a radius around the camera so we
+     only animate what the player can see.
+     ------------------------------------------------------------------ */
   function update(worldTime, dt, camTarget, pulse) {
-    if (!theme || !items.length) return;
+    if (!items.length) return;
 
-    // Cull to a bubble around the camera — no point animating scenery
-    // the player can't see.
     const cx = camTarget ? camTarget.x : 0;
     const cz = camTarget ? camTarget.z : 0;
-    const cull = 78;
+    const cull = 95;
     const cullSq = cull * cull;
 
     for (let i = 0; i < items.length; i++) {
@@ -505,14 +565,12 @@ export function createDecoSystem(scene, opts = {}) {
       const dz = it.mesh.position.z - cz;
       if (dx * dx + dz * dz > cullSq) continue;
 
-      const s = it.bobSpeed;
-      const p = it.bobPhase;
-      it.mesh.position.y = it.baseY + Math.sin(worldTime * s + p) * it.bobAmp;
-
-      if (it.update) it.update(worldTime);
+      if (it.float) {
+        it.mesh.position.y =
+          it.baseY + Math.sin(worldTime * it.bobSpeed + it.bobPhase) * it.bobAmp;
+      }
     }
   }
 
-  /* ---- Return the public surface ---- */
   return { setTheme, build, update, root, clear: clearAll };
 }
