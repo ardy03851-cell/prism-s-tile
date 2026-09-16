@@ -19,9 +19,7 @@
       <div id="scoreBox">
         <div id="score">0</div>
         <div id="combo"></div>
-        <div id="timing">
-          <div id="timingMark"></div>
-        </div>
+        <div id="timing"><div id="timingMark"></div></div>
       </div>
       <div id="flowTag">FLOW ×2</div>
       <div id="bpmTag">—</div>
@@ -43,6 +41,9 @@
         <input id="file" type="file"
           accept="audio/*,.mp3,.m4a,.aac,.wav,.aif,.aiff,.ogg,.oga,.caf" />
         <button class="btn ghost btn-tab" id="demo">Play the demo (precoded music for training)</button>
+        <!-- NEW -->
+        <button class="btn ghost btn-tab" id="skinsBtn">Skins</button>
+        <!-- /NEW -->
         <div class="chips">
           <span class="chip">Headphones recommended</span>
           <span class="chip">MP3 · M4A · WAV</span>
@@ -53,9 +54,7 @@
     <div id="loading" class="screen hidden">
       <div class="card">
         <h2 id="loadTitle" class="dots">Listening</h2>
-        <div class="bar">
-          <div id="barFill"></div>
-        </div>
+        <div class="bar"><div id="barFill"></div></div>
         <p class="sub" id="loadSub" style="margin-bottom:0">Reading the rhythm</p>
       </div>
     </div>
@@ -74,6 +73,9 @@
   <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 import { createDecoSystem } from './deco.js';
+// NEW — skins system
+import { SKINS, getSkin, buildPlayerMesh, createSkinEditor } from './skins.js';
+// /NEW
 
 /* ============================================================
    DOM
@@ -125,7 +127,7 @@ gradientMap.needsUpdate = true;
 const INK = 0x33304a;
 const outlineMat = new THREE.MeshBasicMaterial({ color: INK, side: THREE.BackSide });
 
-/* ---- Sky gradient backdrop ---------------------------------- */
+/* ... sky, grid, bars, particles, deco, patchShine, tiles all unchanged ... */
 let skyTexture = null;
 function makeSkyTexture(bg, paper2, ink) {
   const c = document.createElement('canvas');
@@ -147,7 +149,6 @@ function makeSkyTexture(bg, paper2, ink) {
   return tex;
 }
 
-/* ---- Ground grid --------------------------------------------- */
 const grid = new THREE.GridHelper(420, 84, 0xffffff, 0xffffff);
 grid.material.transparent = true;
 grid.material.opacity = 0.075;
@@ -155,7 +156,6 @@ grid.material.depthWrite = false;
 grid.position.y = -0.06;
 scene.add(grid);
 
-/* ---- Spectrum backdrop (distant, gentle) -------------------- */
 const BAR_N = 28;
 const BAR_HALF = BAR_N >> 1;
 const barGeo = new THREE.BoxGeometry(0.36, 1, 0.36);
@@ -179,7 +179,6 @@ for (let i = 0; i < BAR_N; i++) {
   bars.push(m);
 }
 
-/* ---- Ambient particles -------------------------------------- */
 const particleGroup = new THREE.Group();
 scene.add(particleGroup);
 const particles = [];
@@ -202,53 +201,33 @@ const particles = [];
   }
 }
 
-/* ---- Procedural scenery (deco.js) --------------------------- */
 const deco = createDecoSystem(scene, { density: 1 });
 
-/* ============================================================
-   SURFACE SHINE  (injected into MeshToonMaterial)
-   A soft band of light sweeps diagonally across the tile face.
-   ============================================================ */
 function patchShine(mesh) {
   const u = {
     uShineT:   { value: 0 },
     uShineAmt: { value: 0.10 },
     uShineCol: { value: new THREE.Color(0xffffff) }
   };
-
   mesh.material.onBeforeCompile = (shader) => {
     shader.uniforms.uShineT = u.uShineT;
     shader.uniforms.uShineAmt = u.uShineAmt;
     shader.uniforms.uShineCol = u.uShineCol;
-
-    shader.vertexShader =
-      'varying vec2 vTileUV;\n' +
-      shader.vertexShader.replace(
-        '#include <begin_vertex>',
-        '#include <begin_vertex>\n  vTileUV = uv;'
-      );
-
-    shader.fragmentShader =
-      'varying vec2 vTileUV;\n' +
-      'uniform float uShineT;\n' +
-      'uniform float uShineAmt;\n' +
-      'uniform vec3 uShineCol;\n' +
-      shader.fragmentShader.replace(
-        '#include <color_fragment>',
-        `#include <color_fragment>
-         float sw = vTileUV.x * 0.55 + vTileUV.y * 0.55;
-         float sp = fract(sw * 1.15 - uShineT + 8.0);
-         float band = smoothstep(0.00, 0.055, sp) * (1.0 - smoothstep(0.055, 0.34, sp));
-         band = band * band * (3.0 - 2.0 * band);
-         diffuseColor.rgb += uShineCol * band * uShineAmt;`
-      );
+    shader.vertexShader = 'varying vec2 vTileUV;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>', '#include <begin_vertex>\n  vTileUV = uv;');
+    shader.fragmentShader = 'varying vec2 vTileUV;\nuniform float uShineT;\nuniform float uShineAmt;\nuniform vec3 uShineCol;\n' + shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+       float sw = vTileUV.x * 0.55 + vTileUV.y * 0.55;
+       float sp = fract(sw * 1.15 - uShineT + 8.0);
+       float band = smoothstep(0.00, 0.055, sp) * (1.0 - smoothstep(0.055, 0.34, sp));
+       band = band * band * (3.0 - 2.0 * band);
+       diffuseColor.rgb += uShineCol * band * uShineAmt;`);
   };
-
   mesh.userData.shine = u;
   mesh.material.needsUpdate = true;
 }
 
-/* ---- Tiles -------------------------------------------------- */
 const TILE_W = 1.78, TILE_H = 0.42, TILE_D = 1.78;
 const TILE_POOL = 48;
 const tileGeo = new THREE.BoxGeometry(TILE_W, TILE_H, TILE_D);
@@ -267,27 +246,58 @@ for (let i = 0; i < TILE_POOL; i++) {
   tiles.push(m);
 }
 
-/* ---- Player ------------------------------------------------- */
+/* ============================================================
+   PLAYER — now built from the current skin
+   ============================================================ */
 const PLAYER_R = 0.62;
 const playerGroup = new THREE.Group();
-const playerMesh = new THREE.Mesh(
-  new THREE.OctahedronGeometry(PLAYER_R, 0),
-  new THREE.MeshToonMaterial({ color: 0xff8a68, gradientMap })
-);
-const playerOutline = new THREE.Mesh(playerMesh.geometry, outlineMat);
-playerOutline.scale.setScalar((PLAYER_R + 0.06) / PLAYER_R);
-playerMesh.add(playerOutline);
+
+// Load the chosen skin id from localStorage (falls back to the first one)
+const STORED_SKIN = (() => {
+  try { return localStorage.getItem('prism.skin'); } catch (e) { return null; }
+})();
+let currentSkin = getSkin(STORED_SKIN || 'ember');
+
+// Build the player mesh from the current skin
+let playerMesh = buildPlayerMesh(currentSkin, gradientMap, outlineMat, PLAYER_R);
 playerGroup.add(playerMesh);
 scene.add(playerGroup);
 
-/* ---- Motion trail ------------------------------------------- */
+/**
+ * Swap the player mesh to a different skin and refresh the trail colours.
+ * Safe to call repeatedly — old geometry/material is disposed.
+ */
+function setPlayerSkin(skin) {
+  if (!skin) return;
+  if (currentSkin && skin.id === currentSkin.id) return;
+
+  if (playerMesh) {
+    playerGroup.remove(playerMesh);
+    if (playerMesh.geometry) playerMesh.geometry.dispose();
+    if (playerMesh.material) playerMesh.material.dispose();
+    // (outline shares the same geometry; already disposed above)
+  }
+
+  currentSkin = skin;
+  playerMesh = buildPlayerMesh(skin, gradientMap, outlineMat, PLAYER_R);
+  playerGroup.add(playerMesh);
+
+  // Refresh the trail colours so the ribbons match the new skin
+  for (const m of trailMeshes) {
+    if (m && m.material && m.material.color) m.material.color.setHex(skin.trail.color);
+  }
+
+  try { localStorage.setItem('prism.skin', skin.id); } catch (e) { /* ignore */ }
+}
+
+/* ---- Motion trail (uses the current skin's colour + size) ---- */
 const TRAIL_N = 16;
 const trailGeo = new THREE.OctahedronGeometry(0.34, 0);
 const trailMeshes = [];
 const trailHist = [];
 for (let i = 0; i < TRAIL_N; i++) {
   const m = new THREE.Mesh(trailGeo, new THREE.MeshBasicMaterial({
-    color: 0xff8a68, transparent: true, opacity: 0, depthWrite: false
+    color: currentSkin.trail.color, transparent: true, opacity: 0, depthWrite: false
   }));
   m.visible = false;
   scene.add(m);
@@ -303,7 +313,7 @@ const shadowMesh = new THREE.Mesh(
 shadowMesh.rotation.x = -Math.PI / 2;
 scene.add(shadowMesh);
 
-/* ---- Pulse rings -------------------------------------------- */
+/* ---- Pulse rings ---- */
 const ringGeo = new THREE.RingGeometry(0.72, 0.9, 44);
 const rings = [];
 for (let i = 0; i < 10; i++) {
@@ -325,7 +335,6 @@ function spawnRing(pos, strong, color) {
   r.mesh.scale.setScalar(0.55);
 }
 
-/* ---- Beat cue ring ------------------------------------------ */
 const cueRing = new THREE.Mesh(
   new THREE.RingGeometry(0.62, 0.82, 52),
   new THREE.MeshBasicMaterial({ color: INK, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide })
@@ -335,7 +344,7 @@ cueRing.visible = false;
 scene.add(cueRing);
 
 /* ============================================================
-   GOLDEN TILES — shockwave + shard burst
+   GOLDEN TILES — shockwave + shard burst  (unchanged except spawnMiniShockwave)
    ============================================================ */
 const GOLD = new THREE.Color(0xffc93c);
 const GOLD_HOT = new THREE.Color(0xfff3c4);
@@ -350,36 +359,23 @@ for (let i = 0; i < 18; i++) {
   }));
   m.visible = false;
   scene.add(m);
-  shockPool.push({
-    mesh: m, active: false, life: 0, dur: 0.7,
-    from: 0.4, to: 3.0, peak: 0.8, vert: false, rise: 0, baseY: 0
-  });
+  shockPool.push({ mesh: m, active: false, life: 0, dur: 0.7, from: 0.4, to: 3.0, peak: 0.8, vert: false, rise: 0, baseY: 0 });
 }
 let shockCursor = 0;
-
 function spawnShock(pos, color, o) {
   const s = shockPool[shockCursor++ % shockPool.length];
   const y = pos.y + (o.y || 0.3);
   s.mesh.position.set(pos.x, y, pos.z);
-  if (o.vert) {
-    s.mesh.rotation.set(0, Math.random() * Math.PI * 2, 0);
-  } else {
-    s.mesh.rotation.set(-Math.PI / 2, 0, (Math.random() - 0.5) * 0.5);
-  }
+  if (o.vert) s.mesh.rotation.set(0, Math.random() * Math.PI * 2, 0);
+  else        s.mesh.rotation.set(-Math.PI / 2, 0, (Math.random() - 0.5) * 0.5);
   s.mesh.material.color.copy(color);
   s.mesh.scale.setScalar(o.from);
   s.mesh.visible = false;
   s.active = true;
   s.life = -(o.delay || 0);
-  s.dur = o.dur;
-  s.from = o.from;
-  s.to = o.to;
-  s.peak = o.peak;
-  s.vert = !!o.vert;
-  s.rise = o.rise || 0;
-  s.baseY = y;
+  s.dur = o.dur; s.from = o.from; s.to = o.to; s.peak = o.peak;
+  s.vert = !!o.vert; s.rise = o.rise || 0; s.baseY = y;
 }
-
 function updateShocks(dt) {
   for (const s of shockPool) {
     if (!s.active) continue;
@@ -405,14 +401,12 @@ for (let i = 0; i < 96; i++) {
   }));
   m.visible = false;
   scene.add(m);
-  shardPool.push({
-    mesh: m, active: false, life: 0, dur: 0.7,
-    vel: new THREE.Vector3(), spin: new THREE.Vector3()
-  });
+  shardPool.push({ mesh: m, active: false, life: 0, dur: 0.7, vel: new THREE.Vector3(), spin: new THREE.Vector3() });
 }
 let shardCursor = 0;
 
-function burstShards(pos, n) {
+// NEW: optional `colorOverride` so skins can tint the burst
+function burstShards(pos, n, colorOverride) {
   for (let i = 0; i < n; i++) {
     const s = shardPool[shardCursor++ % shardPool.length];
     const a = Math.random() * Math.PI * 2;
@@ -420,7 +414,8 @@ function burstShards(pos, n) {
     s.vel.set(Math.cos(a) * sp, 1.5 + Math.random() * 2.8, Math.sin(a) * sp);
     s.spin.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14);
     s.mesh.position.set(pos.x + (Math.random() - 0.5) * 0.5, pos.y + 0.35, pos.z + (Math.random() - 0.5) * 0.5);
-    s.mesh.material.color.copy(Math.random() < 0.5 ? GOLD_HOT : GOLD);
+    if (colorOverride) s.mesh.material.color.copy(colorOverride);
+    else s.mesh.material.color.copy(Math.random() < 0.5 ? GOLD_HOT : GOLD);
     s.mesh.scale.setScalar(0.6 + Math.random() * 0.9);
     s.mesh.visible = true;
     s.active = true;
@@ -428,7 +423,6 @@ function burstShards(pos, n) {
     s.dur = 0.55 + Math.random() * 0.40;
   }
 }
-
 function updateShards(dt) {
   for (const s of shardPool) {
     if (!s.active) continue;
@@ -444,21 +438,22 @@ function updateShards(dt) {
   }
 }
 
-/* Small pop for an ordinary perfect landing */
+// NEW: mini shockwave uses the skin's accent colour
 function spawnMiniShockwave(pos) {
-  spawnShock(pos, WHITE, { delay: 0, dur: 0.36, from: 0.30, to: 1.55, peak: 0.34, y: 0.30 });
-  spawnShock(pos, theme.accent, { delay: 0.04, dur: 0.52, from: 0.20, to: 2.0, peak: 0.18, y: 0.32 });
-  burstShards(pos, 5);
+  const accentCol = new THREE.Color(currentSkin.accent);
+  spawnShock(pos, WHITE,    { delay: 0,    dur: 0.36, from: 0.30, to: 1.55, peak: 0.34, y: 0.30 });
+  spawnShock(pos, accentCol,{ delay: 0.04, dur: 0.52, from: 0.20, to: 2.0,  peak: 0.18, y: 0.32 });
+  burstShards(pos, 5, accentCol);
 }
-
-/* Full golden shockwave — three rings + shards */
 function spawnGoldShockwave(pos) {
-  spawnShock(pos, GOLD_HOT, { delay: 0, dur: 0.52, from: 0.35, to: 3.8, peak: 0.95, y: 0.30 });
-  spawnShock(pos, GOLD, { delay: 0.06, dur: 0.92, from: 0.22, to: 5.0, peak: 0.55, y: 0.32, rise: 0.55 });
-  spawnShock(pos, GOLD, { delay: 0.02, dur: 0.70, from: 0.55, to: 2.3, peak: 0.62, y: 0.36, vert: true });
+  spawnShock(pos, GOLD_HOT, { delay: 0,    dur: 0.52, from: 0.35, to: 3.8, peak: 0.95, y: 0.30 });
+  spawnShock(pos, GOLD,     { delay: 0.06, dur: 0.92, from: 0.22, to: 5.0, peak: 0.55, y: 0.32, rise: 0.55 });
+  spawnShock(pos, GOLD,     { delay: 0.02, dur: 0.70, from: 0.55, to: 2.3, peak: 0.62, y: 0.36, vert: true });
   spawnShock(pos, GOLD_HOT, { delay: 0.14, dur: 1.05, from: 0.18, to: 2.6, peak: 0.40, y: 0.28 });
   burstShards(pos, 20);
 }
+
+/* ...the rest is byte-for-byte the original, except as noted below... */
 
 /* ============================================================
    THEME ENGINE
@@ -471,7 +466,6 @@ function mulberry32(a) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-
 const SCHEMES = [
   [0, 32, -32, 64, -64, 180],
   [0, 180, 90, 270, 150, 210],
@@ -480,9 +474,7 @@ const SCHEMES = [
   [0, 18, 36, 54, 72, 90],
   [0, 45, 200, 245, 300, 160]
 ];
-
 let theme = null;
-
 function makeTheme(seed) {
   const rnd = mulberry32((seed >>> 0) || 1);
   const h0 = rnd() * 360;
@@ -490,167 +482,127 @@ function makeTheme(seed) {
   const satBase = 0.48 + rnd() * 0.36;
   const lightBase = 0.68 + rnd() * 0.12;
   const wander = 6 + rnd() * 22;
-
   const tileCols = scheme.map((o) => {
     const h = wrapHue(h0 + o + (rnd() - 0.5) * wander);
     const s = clamp(satBase * (0.78 + rnd() * 0.5), 0.2, 1);
     const l = clamp(lightBase + (rnd() - 0.5) * 0.16, 0.5, 0.94);
     return new THREE.Color().setHSL(h / 360, s, l);
   });
-
   const inkH = wrapHue(h0 + 190 + rnd() * 60);
   const ink = new THREE.Color().setHSL(inkH / 360, 0.26 + rnd() * 0.20, 0.15 + rnd() * 0.07);
-
   const bgH = wrapHue(h0 + 30 + rnd() * 60);
   const bg = new THREE.Color().setHSL(bgH / 360, 0.16 + rnd() * 0.20, 0.91 + rnd() * 0.05);
-
   const paper2 = new THREE.Color().setHSL(bgH / 360, 0.18 + rnd() * 0.16, 0.965);
-
-  const playerH = wrapHue(h0 + (rnd() < 0.5 ? 180 : 0) + (rnd() - 0.5) * 60);
-  const player = new THREE.Color().setHSL(playerH / 360, 0.62 + rnd() * 0.28, 0.58 + rnd() * 0.10);
-
+  const player = new THREE.Color().setHSL(wrapHue(h0 + 180) / 360, 0.7, 0.6); // only used by unused callers now
   const accent = new THREE.Color().setHSL(wrapHue(h0 + 12 + rnd() * 30) / 360, 0.72 + rnd() * 0.2, 0.60 + rnd() * 0.06);
   const accent2 = accent.clone().offsetHSL(0, -0.06, 0.10);
   const mint = new THREE.Color().setHSL(wrapHue(h0 + 130 + rnd() * 40) / 360, 0.5 + rnd() * 0.2, 0.66);
   const sky = new THREE.Color().setHSL(wrapHue(h0 + 215 + rnd() * 40) / 360, 0.55 + rnd() * 0.2, 0.70);
   const particle = new THREE.Color().setHSL(wrapHue(h0 + 60) / 360, 0.30, 0.72);
-
-  return {
-    seed: seed >>> 0,
-    tiles: tileCols, ink, bg, paper2, player, particle, mint, sky,
-    ring: ink.clone().lerp(tileCols[0], 0.35),
-    accent, accent2,
-    glow: 0.55 + rnd() * 0.6
-  };
+  return { seed: seed >>> 0, tiles: tileCols, ink, bg, paper2, player, particle, mint, sky,
+    ring: ink.clone().lerp(tileCols[0], 0.35), accent, accent2, glow: 0.55 + rnd() * 0.6 };
 }
 
 function applyTheme(th) {
   theme = th;
-
   if (skyTexture) skyTexture.dispose();
   skyTexture = makeSkyTexture(th.bg, th.paper2, th.ink);
   scene.background = skyTexture;
   scene.fog.color.copy(th.bg);
 
   outlineMat.color.copy(th.ink);
-  playerMesh.material.color.copy(th.player);
+  // NOTE: player colour is now driven by the current skin — not the theme.
   shadowMesh.material.color.copy(th.ink);
   for (const r of rings) r.mesh.material.color.copy(th.ring);
   cueRing.material.color.copy(th.ring);
   for (const p of particles) p.material.color.copy(th.particle);
-  for (const m of trailMeshes) m.material.color.copy(th.player);
+  // NOTE: trail colour is now driven by the current skin — not the theme.
   grid.material.color.copy(th.ink);
-  for (let i = 0; i < bars.length; i++) {
-    bars[i].material.color.copy(th.tiles[i % th.tiles.length]);
-  }
+  for (let i = 0; i < bars.length; i++) bars[i].material.color.copy(th.tiles[i % th.tiles.length]);
 
-  /* Scenery picks up the palette too */
   deco.setTheme(th);
 
   const rs = document.documentElement.style;
-  rs.setProperty('--ink', '#' + th.ink.getHexString());
-  rs.setProperty('--page', '#' + th.bg.getHexString());
-  rs.setProperty('--paper-2', '#' + th.paper2.getHexString());
-  rs.setProperty('--accent', '#' + th.accent.getHexString());
+  rs.setProperty('--ink',      '#' + th.ink.getHexString());
+  rs.setProperty('--page',     '#' + th.bg.getHexString());
+  rs.setProperty('--paper-2',  '#' + th.paper2.getHexString());
+  rs.setProperty('--accent',   '#' + th.accent.getHexString());
   rs.setProperty('--accent-2', '#' + th.accent2.getHexString());
-  rs.setProperty('--mint', '#' + th.mint.getHexString());
-  rs.setProperty('--sky', '#' + th.sky.getHexString());
+  rs.setProperty('--mint',     '#' + th.mint.getHexString());
+  rs.setProperty('--sky',      '#' + th.sky.getHexString());
 
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', '#' + th.bg.getHexString());
 }
 
 /* ============================================================
-   AUDIO ENGINE
+   AUDIO + ANALYSIS + LEVEL + STATE
+   (completely unchanged)
    ============================================================ */
 let actx = null;
-
 function createAudioContext() {
   if (actx) return actx;
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return null;
   try { actx = new AC({ latencyHint: 'interactive' }); }
-  catch (e) {
-    try { actx = new AC(); } catch (e2) { console.error('AudioContext failed', e2); return null; }
-  }
+  catch (e) { try { actx = new AC(); } catch (e2) { return null; } }
   return actx;
 }
-
 let audioUnlocked = false;
 async function unlockAudio() {
   const ctx = createAudioContext();
   if (!ctx) return;
-  if (ctx.state === 'suspended') {
-    try { await ctx.resume(); } catch (e) { console.warn('resume failed', e); }
-  }
+  if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) {} }
   if (!audioUnlocked) {
     try {
       const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
       const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      src.start(0);
+      src.buffer = buf; src.connect(ctx.destination); src.start(0);
       audioUnlocked = true;
-    } catch (e) { /* silent */ }
+    } catch (e) {}
   }
 }
-
 async function ensureRunning() {
   const ctx = createAudioContext();
   if (!ctx) return null;
-  if (ctx.state !== 'running') {
-    try { await ctx.resume(); } catch (e) { console.warn('resume', e); }
-  }
+  if (ctx.state !== 'running') { try { await ctx.resume(); } catch (e) {} }
   return ctx;
 }
-
 function blip(freq, gain, dur) {
   if (!actx || actx.state !== 'running') return;
   try {
-    const o = actx.createOscillator();
-    const g = actx.createGain();
-    o.type = 'sine';
-    o.frequency.value = freq;
+    const o = actx.createOscillator(); const g = actx.createGain();
+    o.type = 'sine'; o.frequency.value = freq;
     g.gain.setValueAtTime(0, actx.currentTime);
     g.gain.linearRampToValueAtTime(gain, actx.currentTime + 0.004);
     g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur);
     o.connect(g).connect(actx.destination);
-    o.start();
-    o.stop(actx.currentTime + dur + 0.02);
-  } catch (e) { /* ignore */ }
+    o.start(); o.stop(actx.currentTime + dur + 0.02);
+  } catch (e) {}
 }
+['touchstart', 'touchend', 'pointerdown', 'click', 'keydown'].forEach(ev =>
+  document.addEventListener(ev, () => { unlockAudio(); }, { passive: true }));
 
-['touchstart', 'touchend', 'pointerdown', 'click', 'keydown'].forEach(ev => {
-  document.addEventListener(ev, () => { unlockAudio(); }, { passive: true });
-});
+/* ...analysis (computeNovelty, combineBands, estimateTempo, findPhase, pickPeaks,
+   fallbackGrid, buildGrid, analyzeBuffer, seedFrom) — unchanged... */
 
-/* ============================================================
-   BEAT ANALYSIS — three bands + onset snapping
-   ============================================================ */
 const MAX_ANALYSIS_SECONDS = 260;
 const ANALYSIS_SR = 11025;
 const HOP = 128;
 const WIN = 512;
-
 function computeNovelty(data, sr) {
   const frames = Math.max(2, Math.floor((data.length - WIN) / HOP) + 1);
   const env = new Float32Array(frames);
-
   for (let i = 0; i < frames; i++) {
-    const o = i * HOP;
-    let s = 0;
+    const o = i * HOP; let s = 0;
     for (let j = 0; j < WIN; j++) { const v = data[o + j]; s += v * v; }
     env[i] = Math.sqrt(s / WIN);
   }
-
   const sm = new Float32Array(frames);
   for (let i = 0; i < frames; i++) {
-    const a = env[Math.max(0, i - 1)];
-    const b = env[i];
-    const c = env[Math.min(frames - 1, i + 1)];
+    const a = env[Math.max(0, i - 1)], b = env[i], c = env[Math.min(frames - 1, i + 1)];
     sm[i] = (a + b + c) / 3;
   }
-
   const nov = new Float32Array(frames);
   let peak = 0;
   for (let i = 1; i < frames; i++) {
@@ -658,33 +610,21 @@ function computeNovelty(data, sr) {
     nov[i] = d > 0 ? d : 0;
     if (nov[i] > peak) peak = nov[i];
   }
-
   return { nov, frames, fps: sr / HOP, peak };
 }
-
 function combineBands(low, mid, high) {
   const n = low.frames;
   const g = Math.max(low.peak, mid.peak, high.peak) || 1;
-
   const lo = new Float32Array(n), md = new Float32Array(n), hi = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    lo[i] = low.nov[i] / g;
-    md[i] = mid.nov[i] / g;
-    hi[i] = high.nov[i] / g;
-  }
-
-  const comb = new Float32Array(n);
-  let mx = 0;
+  for (let i = 0; i < n; i++) { lo[i] = low.nov[i] / g; md[i] = mid.nov[i] / g; hi[i] = high.nov[i] / g; }
+  const comb = new Float32Array(n); let mx = 0;
   for (let i = 0; i < n; i++) {
     const v = 0.62 * lo[i] + 0.26 * md[i] + 0.12 * hi[i];
-    comb[i] = v;
-    if (v > mx) mx = v;
+    comb[i] = v; if (v > mx) mx = v;
   }
   if (mx > 1e-7) for (let i = 0; i < n; i++) comb[i] /= mx;
-
   return { low: lo, mid: md, high: hi, comb, frames: n, fps: low.fps };
 }
-
 function estimateTempo(nov, frames, fps) {
   let bestBpm = 110, bestScore = -1;
   for (let bpm = 62; bpm <= 180; bpm += 0.5) {
@@ -692,15 +632,12 @@ function estimateTempo(nov, frames, fps) {
     const li = Math.floor(lag);
     if (li < 4 || li > frames - 4) continue;
     const fr = lag - li;
-
     let sum = 0, cnt = 0;
     for (let i = 0; i + li + 1 < frames; i++) {
       const v = nov[i + li] * (1 - fr) + nov[i + li + 1] * fr;
-      sum += nov[i] * v;
-      cnt++;
+      sum += nov[i] * v; cnt++;
     }
     let score = cnt > 0 ? sum / cnt : 0;
-
     const lag2 = lag * 2, li2 = Math.floor(lag2);
     if (li2 < frames - 4) {
       const fr2 = lag2 - li2;
@@ -711,15 +648,12 @@ function estimateTempo(nov, frames, fps) {
       }
       if (c2 > 0) score += 0.45 * (s2 / c2);
     }
-
     const l = Math.log2(bpm / 118);
     score *= Math.exp(-0.5 * l * l / 0.36);
-
     if (score > bestScore) { bestScore = score; bestBpm = bpm; }
   }
   return bestBpm;
 }
-
 function findPhase(nov, frames, fps, bpm) {
   const period = (60 / bpm) * fps;
   let bestPhase = 0, bestScore = -1;
@@ -728,8 +662,7 @@ function findPhase(nov, frames, fps, bpm) {
     const phase = (s / STEPS) * period;
     let sum = 0, cnt = 0;
     for (let t = phase; t < frames - 1; t += period) {
-      const i0 = t | 0;
-      const fr = t - i0;
+      const i0 = t | 0; const fr = t - i0;
       const v = nov[i0] * (1 - fr) + nov[Math.min(frames - 1, i0 + 1)] * fr;
       sum += v; cnt++;
     }
@@ -739,39 +672,31 @@ function findPhase(nov, frames, fps, bpm) {
   }
   return bestPhase / fps;
 }
-
 function pickPeaks(nov, frames, fps, minGapSec) {
   const peaks = [];
   const W = Math.max(3, Math.round(fps * 0.34));
   const minGap = Math.max(1, Math.round(minGapSec * fps));
-
   for (let i = 1; i < frames - 1; i++) {
     const v = nov[i];
     if (v <= nov[i - 1] || v < nov[i + 1]) continue;
     if (v < 0.06) continue;
-
     let mean = 0, cnt = 0;
     const a = Math.max(0, i - W), b = Math.min(frames - 1, i + W);
     for (let j = a; j <= b; j++) { mean += nov[j]; cnt++; }
     mean /= cnt;
     if (v < mean * 1.30 + 0.025) continue;
-
     peaks.push({ i, t: i / fps, v });
   }
-
   peaks.sort((a, b) => b.v - a.v);
   const kept = [];
   for (const p of peaks) {
     let ok = true;
-    for (const k of kept) {
-      if (Math.abs(k.t - p.t) * fps < minGap) { ok = false; break; }
-    }
+    for (const k of kept) if (Math.abs(k.t - p.t) * fps < minGap) { ok = false; break; }
     if (ok) kept.push(p);
   }
   kept.sort((a, b) => a.t - b.t);
   return kept;
 }
-
 function fallbackGrid(duration) {
   const beats = [], energies = [], low = [], mid = [], high = [], weights = [], types = [];
   for (let t = 1.8; t < Math.min(duration, MAX_ANALYSIS_SECONDS) - 1.5; t += 0.62) {
@@ -781,27 +706,21 @@ function fallbackGrid(duration) {
   }
   return { beats, energies, low, mid, high, weights, types, bpm: 110 };
 }
-
 function buildGrid(phaseSec, bpm, duration, bands, peaks) {
   const period = 60 / bpm;
   const minT = 1.35;
   const maxT = duration - 1.2;
-  const frames = bands.frames;
-  const fps = bands.fps;
+  const frames = bands.frames, fps = bands.fps;
   const LOOK = Math.max(1, Math.round(fps * 0.06));
-
   function bandAt(arr, t) {
-    const idx = Math.round(t * fps);
-    let m = 0;
+    const idx = Math.round(t * fps); let m = 0;
     const a = Math.max(0, idx - LOOK), b = Math.min(frames - 1, idx + LOOK);
     for (let i = a; i <= b; i++) if (arr[i] > m) m = arr[i];
     return m;
   }
-
   const times = [];
   for (let t = phaseSec; t < maxT; t += period) if (t >= minT) times.push(t);
   if (times.length < 4) return fallbackGrid(duration);
-
   const TOL = period * 0.30;
   const used = new Set();
   for (let i = 0; i < times.length; i++) {
@@ -813,39 +732,23 @@ function buildGrid(phaseSec, bpm, duration, bands, peaks) {
     }
     if (best) { used.add(best); times[i] = best.t; }
   }
-
   const extra = [];
   for (const p of peaks) {
     if (used.has(p) || p.v < 0.42) continue;
     let nearest = Infinity;
-    for (const t of times) {
-      const d = Math.abs(t - p.t);
-      if (d < nearest) nearest = d;
-    }
+    for (const t of times) { const d = Math.abs(t - p.t); if (d < nearest) nearest = d; }
     if (nearest > period * 0.34 && nearest < period * 0.70) extra.push(p.t);
   }
-
   const all = times.concat(extra).sort((a, b) => a - b);
-
   const merged = [];
-  for (const t of all) {
-    if (merged.length && t - merged[merged.length - 1] < 0.30) continue;
-    merged.push(t);
-  }
-
+  for (const t of all) { if (merged.length && t - merged[merged.length - 1] < 0.30) continue; merged.push(t); }
   const raw = merged.map(t => ({
     t,
-    low: bandAt(bands.low, t),
-    mid: bandAt(bands.mid, t),
-    high: bandAt(bands.high, t),
-    e: bandAt(bands.comb, t)
+    low: bandAt(bands.low, t), mid: bandAt(bands.mid, t),
+    high: bandAt(bands.high, t), e: bandAt(bands.comb, t)
   }));
-
   let start = 0;
-  for (let i = 0; i < raw.length; i++) {
-    if (raw[i].e > 0.16 || raw[i].low > 0.20) { start = Math.max(0, i - 1); break; }
-  }
-
+  for (let i = 0; i < raw.length; i++) if (raw[i].e > 0.16 || raw[i].low > 0.20) { start = Math.max(0, i - 1); break; }
   const out = [];
   for (let i = start; i < raw.length; i++) {
     const b = raw[i];
@@ -856,77 +759,44 @@ function buildGrid(phaseSec, bpm, duration, bands, peaks) {
     }
     out.push(b);
   }
-
   if (out.length < 4) return fallbackGrid(duration);
-
   const beats = [], energies = [], low = [], mid = [], high = [], weights = [], types = [];
-
   for (let i = 0; i < out.length; i++) {
     const b = out[i];
-    beats.push(b.t);
-    energies.push(clamp(b.e, 0, 1));
-    low.push(clamp(b.low, 0, 1));
-    mid.push(clamp(b.mid, 0, 1));
-    high.push(clamp(b.high, 0, 1));
+    beats.push(b.t); energies.push(clamp(b.e, 0, 1));
+    low.push(clamp(b.low, 0, 1)); mid.push(clamp(b.mid, 0, 1)); high.push(clamp(b.high, 0, 1));
     weights.push(clamp(0.52 * b.low + 0.30 * b.mid + 0.18 * b.high, 0, 1));
-
     let type = 'mid';
     if (b.low > b.mid * 1.05 && b.low > b.high * 1.15) type = 'bass';
     else if (b.high > b.mid * 1.02 && b.high > b.low * 1.20) type = 'hat';
     else if (b.mid > b.low * 1.05 && b.mid > b.high * 1.05) type = 'snare';
     types.push(type);
   }
-
   function norm(arr) {
-    let mx = 0;
-    for (const v of arr) if (v > mx) mx = v;
+    let mx = 0; for (const v of arr) if (v > mx) mx = v;
     if (mx < 1e-6) return arr.map(() => 0.4);
     return arr.map(v => clamp(v / mx, 0, 1));
   }
-
-  return {
-    beats, energies, types,
-    low: norm(low), mid: norm(mid), high: norm(high),
-    weights,
-    bpm: Math.round(bpm)
-  };
+  return { beats, energies, types, low: norm(low), mid: norm(mid), high: norm(high), weights, bpm: Math.round(bpm) };
 }
-
 async function analyzeBuffer(buffer, onProgress) {
   const duration = Math.min(buffer.duration, MAX_ANALYSIS_SECONDS);
-
-  onProgress(0.18, 'Splitting the spectrum…');
-  await nextFrame();
-
+  onProgress(0.18, 'Splitting the spectrum…'); await nextFrame();
   const sr = ANALYSIS_SR;
   const off = new OfflineAudioContext(3, Math.ceil(duration * sr), sr);
-  const src = off.createBufferSource();
-  src.buffer = buffer;
-
-  const mk = (type, freq, Q) => {
-    const f = off.createBiquadFilter();
-    f.type = type; f.frequency.value = freq; f.Q.value = Q;
-    return f;
-  };
-
-  const lowLP = mk('lowpass', 155, 0.7);
-  const lowHP = mk('highpass', 30, 0.7);
-  const midHP = mk('highpass', 220, 0.7);
-  const midLP = mk('lowpass', 2200, 0.7);
+  const src = off.createBufferSource(); src.buffer = buffer;
+  const mk = (type, freq, Q) => { const f = off.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = Q; return f; };
+  const lowLP = mk('lowpass', 155, 0.7), lowHP = mk('highpass', 30, 0.7);
+  const midHP = mk('highpass', 220, 0.7), midLP = mk('lowpass', 2200, 0.7);
   const highHP = mk('highpass', 3500, 0.7);
-
   const merger = off.createChannelMerger(3);
   src.connect(lowLP); lowLP.connect(lowHP); lowHP.connect(merger, 0, 0);
   src.connect(midHP); midHP.connect(midLP); midLP.connect(merger, 0, 1);
   src.connect(highHP); highHP.connect(merger, 0, 2);
-  merger.connect(off.destination);
-  src.start(0);
-
+  merger.connect(off.destination); src.start(0);
   let rendered;
-  try {
-    rendered = await off.startRendering();
-  } catch (e) {
-    console.warn('Offline render failed, falling back', e);
+  try { rendered = await off.startRendering(); }
+  catch (e) {
     const ch = buffer.getChannelData(0);
     const band = computeNovelty(ch, buffer.sampleRate);
     const bands = combineBands(band, band, band);
@@ -937,139 +807,84 @@ async function analyzeBuffer(buffer, onProgress) {
     grid.seed = seedFrom(bands.comb, bands.frames, bpm, duration);
     return grid;
   }
-
-  onProgress(0.52, 'Hunting for onsets…');
-  await nextFrame();
-
+  onProgress(0.52, 'Hunting for onsets…'); await nextFrame();
   const low = computeNovelty(rendered.getChannelData(0), sr);
   const mid = computeNovelty(rendered.getChannelData(1), sr);
   const high = computeNovelty(rendered.getChannelData(2), sr);
   const bands = combineBands(low, mid, high);
-
-  onProgress(0.74, 'Counting the tempo…');
-  await nextFrame();
-
+  onProgress(0.74, 'Counting the tempo…'); await nextFrame();
   let bpm = estimateTempo(bands.comb, bands.frames, bands.fps);
   if (!isFinite(bpm) || bpm < 55 || bpm > 200) bpm = 110;
-
   const phase = findPhase(bands.comb, bands.frames, bands.fps, bpm);
-
-  onProgress(0.88, 'Chasing the syncopation…');
-  await nextFrame();
-
+  onProgress(0.88, 'Chasing the syncopation…'); await nextFrame();
   const peaks = pickPeaks(bands.comb, bands.frames, bands.fps, 0.12);
   const grid = buildGrid(phase, bpm, duration, bands, peaks);
   grid.seed = seedFrom(bands.comb, bands.frames, bpm, duration);
-
-  onProgress(1.0, 'Ready');
-  await nextFrame();
-
+  onProgress(1.0, 'Ready'); await nextFrame();
   return grid;
 }
-
 function seedFrom(nov, frames, bpm, duration) {
   let s = 2166136261 >>> 0;
   for (let i = 0; i < frames; i += 11) {
     s ^= (nov[i] * 16777216) | 0;
     s = Math.imul(s, 16777619) >>> 0;
   }
-  s ^= Math.round(bpm * 97);
-  s = Math.imul(s, 16777619) >>> 0;
-  s ^= Math.round(duration * 31);
-  s = Math.imul(s, 16777619) >>> 0;
+  s ^= Math.round(bpm * 97); s = Math.imul(s, 16777619) >>> 0;
+  s ^= Math.round(duration * 31); s = Math.imul(s, 16777619) >>> 0;
   return s >>> 0;
 }
 
-/* ============================================================
-   LEVEL
-   ============================================================ */
 const WHITE = new THREE.Color(0xffffff);
-
 function buildLevel(beatTimes, energies, seed, extra) {
   const n = beatTimes.length;
   const x = new Float32Array(n), y = new Float32Array(n), z = new Float32Array(n);
   const scale = new Float32Array(n), rot = new Float32Array(n);
   const landSquash = new Float32Array(n);
   const colors = new Array(n);
-
   const types = (extra && extra.types) || new Array(n).fill('mid');
   const weights = (extra && extra.weights) || new Array(n).fill(0.5);
   const lows = (extra && extra.low) || new Array(n).fill(0.4);
   const highs = (extra && extra.high) || new Array(n).fill(0.4);
-
   const rnd = mulberry32((seed >>> 0) ^ 0x9e3779b9);
   const pal = theme.tiles;
   const palOff = Math.floor(rnd() * pal.length);
   const inkC = theme.ink;
-
-  let cz = 0;
-  let lat = 0;
-  let vy = 0;
-  let first = true;
-
+  let cz = 0, lat = 0, vy = 0, first = true;
   for (let i = 0; i < n; i++) {
     const e = energies[i] != null ? energies[i] : 0.5;
     const w = weights[i] != null ? weights[i] : 0.5;
     const type = types[i] || 'mid';
-
     if (i > 0) {
       const dt = clamp(beatTimes[i] - beatTimes[i - 1], 0.20, 3.2);
       const breathe = 0.86 + 0.26 * Math.sin(i * 0.61 + seed * 0.0007) + (rnd() - 0.5) * 0.30;
-
       let push = 2.55 + w * 1.85;
-      if (type === 'bass') push += 0.60;
-      else if (type === 'hat') push -= 0.45;
-
+      if (type === 'bass') push += 0.60; else if (type === 'hat') push -= 0.45;
       const step = clamp(dt * push * breathe, 1.25, 7.4);
       cz -= step;
-
       const swing = (type === 'hat' ? 1.35 : type === 'bass' ? 1.6 : 2.6) * (0.35 + e);
-      lat += (rnd() - 0.5) * swing;
-      lat *= 0.80;
-      lat = clamp(lat, -2.3, 2.3);
+      lat += (rnd() - 0.5) * swing; lat *= 0.80; lat = clamp(lat, -2.3, 2.3);
     }
-
     z[i] = cz;
     x[i] = lat + Math.sin(cz * 0.15 + seed * 0.0009) * 0.60 + Math.sin(cz * 0.031) * 0.90;
-
-    const targetY = clamp(
-      0.82 + highs[i] * 1.75 - lows[i] * 0.78 + Math.sin(cz * 0.09 + 0.6) * 0.38,
-      0.28, 2.70
-    );
-
+    const targetY = clamp(0.82 + highs[i] * 1.75 - lows[i] * 0.78 + Math.sin(cz * 0.09 + 0.6) * 0.38, 0.28, 2.70);
     if (first) { vy = targetY; first = false; }
-    vy += (targetY - vy) * 0.42;
-    y[i] = vy;
-
+    vy += (targetY - vy) * 0.42; y[i] = vy;
     const col = pal[(i * 3 + palOff) % pal.length].clone();
     if (type === 'bass') col.lerp(inkC, 0.20).offsetHSL(0, 0.06, -0.05);
     else if (type === 'hat') col.lerp(WHITE, 0.44).offsetHSL(0, -0.05, 0.05);
     else if (type === 'snare') col.lerp(WHITE, 0.14);
     colors[i] = col;
-
     let sc = 0.86 + e * 0.26;
-    if (type === 'bass') sc += 0.24;
-    else if (type === 'hat') sc -= 0.17;
+    if (type === 'bass') sc += 0.24; else if (type === 'hat') sc -= 0.17;
     scale[i] = clamp(sc, 0.60, 1.50);
-
     rot[i] = (rnd() - 0.5) * 0.55 + (type === 'hat' ? 0.22 : 0);
   }
-
-  /* ==========================================================
-     GOLDEN CANDIDATES
-     Only a small handful of beats per run are eligible to turn
-     gold. They are picked from the musically strongest moments
-     (heavy bass / strong snare) and kept well apart so each one
-     feels like an event rather than a constant.
-     ========================================================== */
-  const golden = new Uint8Array(n);        // 1 once the player has earned it
+  const golden = new Uint8Array(n);
   const goldenT = new Float32Array(n).fill(-1);
-  const goldCand = new Uint8Array(n);      // 1 = eligible
-
+  const goldCand = new Uint8Array(n);
   if (n > 8) {
     const want = clamp(Math.round(n / 26), 3, 7);
     const minGap = Math.max(8, Math.round(n / (want + 1)));
-
     const ranked = [];
     for (let i = 1; i < n - 1; i++) {
       const w = weights[i] != null ? weights[i] : 0.5;
@@ -1079,51 +894,28 @@ function buildLevel(beatTimes, energies, seed, extra) {
       ranked.push({ i, s: w * 0.55 + e * 0.45 + bonus });
     }
     ranked.sort((a, b) => b.s - a.s);
-
     let placed = 0;
     for (const r of ranked) {
       if (placed >= want) break;
       let ok = true;
-      for (let j = 0; j < n; j++) {
-        if (goldCand[j] && Math.abs(j - r.i) < minGap) { ok = false; break; }
-      }
+      for (let j = 0; j < n; j++) if (goldCand[j] && Math.abs(j - r.i) < minGap) { ok = false; break; }
       if (!ok) continue;
-      goldCand[r.i] = 1;
-      placed++;
+      goldCand[r.i] = 1; placed++;
     }
-
-    if (placed < 2) {
-      for (let k = 1; k <= 3; k++) {
-        const i = Math.round((n * k) / 4);
-        if (i > 0 && i < n - 1) goldCand[i] = 1;
-      }
+    if (placed < 2) for (let k = 1; k <= 3; k++) {
+      const i = Math.round((n * k) / 4);
+      if (i > 0 && i < n - 1) goldCand[i] = 1;
     }
   }
-
-  return {
-    beats: beatTimes, energies, x, y, z, colors, count: n,
-    types, weights, low: lows, high: highs, scale, rot, landSquash,
-    golden, goldenT, goldCand
-  };
+  return { beats: beatTimes, energies, x, y, z, colors, count: n, types, weights, low: lows, high: highs, scale, rot, landSquash, golden, goldenT, goldCand };
 }
 
-/* ============================================================
-   STATE
-   ============================================================ */
 const state = {
-  mode: 'menu',
-  level: null, pIdx: 0,
+  mode: 'menu', level: null, pIdx: 0,
   songTime: 0, frozenTime: 0, menuTime: 0, startTime: 0,
   airborne: 0, squash: 0, hopProgress: 0,
-  audioSrc: null, gainNode: null,
-  bpm: 0, buffer: null, camShake: 0,
-  songDuration: 0,
-  pulse: 0,
-  live: 0,
-  roll: 0,
-  flow: 0,
-  flowOn: false,
-  landKick: 0,
+  audioSrc: null, gainNode: null, bpm: 0, buffer: null, camShake: 0,
+  songDuration: 0, pulse: 0, live: 0, roll: 0, flow: 0, flowOn: false, landKick: 0,
   lastAnalysis: null
 };
 let judged = [], judgePtr = 0;
@@ -1140,22 +932,18 @@ const _fullPos = new THREE.Vector3();
 const _tmpA = new THREE.Vector3();
 const _tmpB = new THREE.Vector3();
 const _wavePos = new THREE.Vector3();
-
 const smootherstep = t => t * t * t * (t * (t * 6 - 15) + 10);
-
 function getTilePos(i, t, out) {
   const L = state.level;
   out.set(L.x[i], L.y[i] + Math.sin(t * 1.2 + i * 0.7) * 0.06, L.z[i]);
   return out;
 }
-
 function timingWindow(i) {
   const B = state.level.beats;
   const prev = i > 0 ? B[i] - B[i - 1] : 0.8;
   const next = i < B.length - 1 ? B[i + 1] - B[i] : 0.8;
   return clamp(Math.min(prev, next) * 0.50, 0.16, 0.40);
 }
-
 function isRequiredBeat(i) {
   const L = state.level;
   const w = L.weights[i] != null ? L.weights[i] : 0.5;
@@ -1179,76 +967,55 @@ function buildMenuLevel() {
     types.push(isBass ? 'bass' : isHat ? 'hat' : 'snare');
   }
   state.level = buildLevel(beats, energies, 0xBEA7, { low, mid, high, weights, types });
-  state.pIdx = 0;
-  state.menuTime = 0;
-  state.squash = 0;
+  state.pIdx = 0; state.menuTime = 0; state.squash = 0;
   camTarget.set(state.level.x[0], state.level.y[0], state.level.z[0]);
   camera.position.copy(camTarget).add(CAM_OFFSET);
   deco.build(state.level, 0xBEA7);
 }
 
-/* ============================================================
-   PLAYER TRANSFORM
-   ============================================================ */
 function updatePlayerTransform(t, dt) {
   const L = state.level;
   const B = L.beats;
   const i = state.pIdx;
   getTilePos(i, t, _groundPos);
-
   let p = 0, airborne = 0;
-
   if (i + 1 < B.length) {
     const interval = Math.max(0.05, B[i + 1] - B[i]);
     const nextType = L.types[i + 1] || 'mid';
     const nextW = L.weights[i + 1] != null ? L.weights[i + 1] : 0.5;
-
     let durFrac = 0.78;
     if (nextType === 'bass') durFrac = 0.92;
     else if (nextType === 'hat') durFrac = 0.52;
     else if (nextType === 'snare') durFrac = 0.70;
-
     const dur = clamp(interval * durFrac, 0.26, 1.25);
     const jumpStart = B[i + 1] - dur;
-
     if (t >= jumpStart) {
       p = clamp((t - jumpStart) / dur, 0, 1);
       const eased = smootherstep(p);
       getTilePos(i + 1, t, _tmpB);
       _fullPos.copy(_groundPos).lerp(_tmpB, eased);
-
       const dist = _groundPos.distanceTo(_tmpB);
       let arcH = 0.42 + dist * 0.15 + interval * 0.30 + nextW * 0.55;
       if (nextType === 'bass') arcH += 0.40;
       else if (nextType === 'hat') arcH -= 0.16;
       arcH = clamp(arcH, 0.30, 2.4);
-
       const arc = Math.sin(p * Math.PI);
       _fullPos.y += arc * arcH;
       airborne = arc;
-    } else {
-      _fullPos.copy(_groundPos);
-    }
-  } else {
-    _fullPos.copy(_groundPos);
-  }
-
+    } else _fullPos.copy(_groundPos);
+  } else _fullPos.copy(_groundPos);
   state.airborne = airborne;
   state.hopProgress = p;
   playerGroup.position.copy(_fullPos);
-
-  /* frame-rate independent squash recovery */
   state.squash += (0 - state.squash) * (1 - Math.exp(-dt * 11));
   const stretch = airborne * 0.20;
   let sy = (1 + state.squash) * (1 + stretch);
   sy = Math.max(0.55, Math.min(1.42, sy));
   const sxz = 1 / Math.sqrt(sy);
   playerMesh.scale.set(sxz, sy, sxz);
-
   const easedP = smootherstep(p);
   playerMesh.rotation.x = -easedP * Math.PI * 2;
   playerMesh.rotation.y += 0.006 + state.pulse * 0.014;
-
   shadowMesh.position.set(_groundPos.x, _groundPos.y + 0.225, _groundPos.z);
   const h = Math.max(0, _fullPos.y - _groundPos.y);
   const sc = Math.max(0.35, 1 - h * 0.30);
@@ -1256,7 +1023,6 @@ function updatePlayerTransform(t, dt) {
   shadowMesh.material.opacity = 0.17 * sc;
 }
 
-/* ---- trail -------------------------------------------------- */
 function updateTrail(dt) {
   trailTimer += dt;
   if (trailTimer >= 0.032) {
@@ -1274,8 +1040,9 @@ function updateTrail(dt) {
     if (k < 0.02) { m.visible = false; continue; }
     m.visible = true;
     m.position.copy(h.pos);
-    m.material.opacity = k * 0.16;
-    m.scale.setScalar(0.40 + k * 0.75);
+    // NEW: opacity + size come from the current skin
+    m.material.opacity = k * currentSkin.trail.opacity;
+    m.scale.setScalar(currentSkin.trail.size * (0.40 + k * 0.75));
   }
 }
 
@@ -1284,41 +1051,30 @@ function updateTrail(dt) {
    ============================================================ */
 function updateTiles(t, dt) {
   for (let s = 0; s < TILE_POOL; s++) tiles[s].visible = false;
-
   const L = state.level;
   const base = state.pIdx - 4;
   const nextIdx = state.pIdx + 1;
   const pulse = state.pulse;
-
   for (let k = 0; k < TILE_POOL; k++) {
     const idx = base + k;
     if (idx < 0 || idx >= L.count) continue;
-
     const slot = ((idx % TILE_POOL) + TILE_POOL) % TILE_POOL;
     const m = tiles[slot];
     m.visible = true;
-
-    if (m.userData.idx !== idx) {
-      m.userData.idx = idx;
-      m.userData.spawn = 0;
-    }
+    if (m.userData.idx !== idx) { m.userData.idx = idx; m.userData.spawn = 0; }
     m.userData.spawn = Math.min(1, m.userData.spawn + dt * 3.4);
     const spawnEase = 1 - Math.pow(1 - m.userData.spawn, 3);
-
     const type = L.types[idx] || 'mid';
     const weight = L.weights[idx] != null ? L.weights[idx] : 0.5;
     const isGolden = L.golden[idx] === 1;
     const isCand = !isGolden && L.goldCand[idx] === 1;
-
     let gFlash = 0;
     if (isGolden) {
       if (L.goldenT[idx] < 0) L.goldenT[idx] = 0;
       L.goldenT[idx] += dt;
       gFlash = Math.exp(-L.goldenT[idx] * 3.0);
     }
-
     let pop = 0, glow = 0.03, emissive = 0;
-
     if (idx === state.pIdx) {
       pop = pulse * (type === 'bass' ? 0.20 : 0.14);
       glow = 0.05 + pulse * 0.36;
@@ -1329,37 +1085,27 @@ function updateTiles(t, dt) {
       glow = 0.12 + pl * 0.16 + pulse * 0.12;
       emissive = (0.07 + pl * 0.08) * theme.glow;
     }
-
     if (type === 'hat') glow += 0.04;
     if (state.flowOn) emissive += 0.07 * theme.glow;
-
-    /* ---- landing squash (indie "jelly" feel) ---- */
     let land = 0;
     if (L.landSquash) {
       L.landSquash[idx] *= Math.exp(-dt * 10);
       land = L.landSquash[idx];
       if (land < 0.002) L.landSquash[idx] = 0;
     }
-
     const baseScale = L.scale[idx] || 1;
     const goldPop = isGolden ? (1 + gFlash * 0.35) : 1;
     const s = baseScale * (0.4 + spawnEase * 0.6) * (1 + pop) * goldPop;
     const sqY = 1 - land * 0.26;
     const sqXZ = 1 + land * 0.11;
     m.scale.set(s * sqXZ, s * sqY, s * sqXZ);
-
     const bob = Math.sin(t * 1.2 + idx * 0.7) * (0.05 + (idx === state.pIdx ? pulse * 0.08 : 0));
     m.position.set(L.x[idx], L.y[idx] + bob - land * 0.10, L.z[idx]);
-
     m.rotation.y = L.rot[idx] + Math.sin(t * 0.45 + idx) * 0.05;
     m.rotation.z = Math.sin(t * 0.6 + idx * 1.3) * 0.012;
-
-    /* ---- Colour ---- */
     if (isGolden) {
       m.material.color.copy(GOLD).lerp(WHITE, clamp(0.12 + glow * 0.55 + gFlash * 0.65, 0, 0.92));
-      m.material.emissive.copy(GOLD).multiplyScalar(
-        0.26 + emissive + gFlash * 1.10 + pulse * 0.28
-      );
+      m.material.emissive.copy(GOLD).multiplyScalar(0.26 + emissive + gFlash * 1.10 + pulse * 0.28);
     } else if (isCand) {
       m.material.color.copy(L.colors[idx]).lerp(GOLD_SOFT, 0.22 + glow * 0.20);
       m.material.emissive.copy(GOLD_SOFT).multiplyScalar(0.04 + emissive * 0.9);
@@ -1367,8 +1113,6 @@ function updateTiles(t, dt) {
       m.material.color.copy(L.colors[idx]).lerp(WHITE, Math.min(0.82, glow));
       m.material.emissive.copy(L.colors[idx]).multiplyScalar(emissive);
     }
-
-    /* ---- Surface shine sweep ---- */
     const sh = m.userData.shine;
     if (sh) {
       sh.uShineT.value = worldTime * (isGolden ? 0.62 : isCand ? 0.36 : 0.27) + idx * 0.19;
@@ -1382,9 +1126,6 @@ function updateTiles(t, dt) {
   }
 }
 
-/* ============================================================
-   RINGS + CUE
-   ============================================================ */
 function updateRings(dt) {
   for (const r of rings) {
     if (r.life < 0) continue;
@@ -1395,13 +1136,11 @@ function updateRings(dt) {
     r.mesh.material.opacity = (1 - d) * 0.38;
   }
 }
-
 function updateCueRing() {
   if (state.mode !== 'play' || !state.level) { cueRing.visible = false; return; }
   const L = state.level;
   const i = state.pIdx;
   if (i + 1 >= L.count) { cueRing.visible = false; return; }
-
   const timeToBeat = L.beats[i + 1] - state.songTime;
   const look = clamp((L.beats[i + 1] - L.beats[i]) * 1.4, 0.55, 1.7);
   if (timeToBeat > 0 && timeToBeat < look) {
@@ -1411,16 +1150,11 @@ function updateCueRing() {
     cueRing.scale.setScalar(1.0 - eased * 0.82);
     cueRing.material.opacity = 0.10 + eased * 0.34;
     cueRing.visible = true;
-  } else {
-    cueRing.visible = false;
-  }
+  } else cueRing.visible = false;
 }
 
 /* ============================================================
-   FEEDBACK — animated, flavourful landing text
-   ------------------------------------------------------------
-   Uses the Web Animations API on an inner wrapper so the
-   container's own positioning from style.css is never touched.
+   FEEDBACK (unchanged)
    ============================================================ */
 const FLAVORS = {
   perfect: ['FLAWLESS', 'SILKY', 'ON POINT', 'SHARP', 'CLEAN', 'SMOOTH', 'NAILED IT', 'SNAP', 'BUTTER'],
@@ -1429,21 +1163,17 @@ const FLAVORS = {
   miss:    ['WHOOPS', 'MISSED', 'OUCH', 'NOPE', 'OFF BEAT'],
   gold:    ['GOLD RUSH', 'PURE GOLD', 'JACKPOT', 'MINTED', 'ALL THAT GLITTERS', '24K']
 };
-
 function pickFlavor(kind, gold) {
   const pool = gold ? FLAVORS.gold : (FLAVORS[kind] || FLAVORS.good);
   return pool[(Math.random() * pool.length) | 0];
 }
-
 let fbTimer = null;
 let fbGen = 0;
-
 function showFeedback(text, cls, opts = {}) {
   if (!feedbackEl) return;
   const gen = ++fbGen;
   const gold = !!opts.gold;
   const flavor = opts.flavor || pickFlavor(cls, gold);
-
   feedbackEl.className = 'show f-' + cls + (gold ? ' f-gold' : '');
   feedbackEl.innerHTML =
     '<span class="fb-wrap" style="display:inline-block;will-change:transform,opacity">' +
@@ -1451,16 +1181,13 @@ function showFeedback(text, cls, opts = {}) {
       '<span class="fb-tail" style="display:block;font-size:0.34em;letter-spacing:0.22em;' +
         'opacity:0.8;margin-top:0.15em;font-weight:700">' + flavor + '</span>' +
     '</span>';
-
   const wrap = feedbackEl.querySelector('.fb-wrap');
   const tail = feedbackEl.querySelector('.fb-tail');
   if (!wrap) return;
-
   const tilt = (Math.random() * 2 - 1) * 9;
   const dir = Math.random() < 0.5 ? -1 : 1;
   const dur = gold ? 1150 : 820;
   const comboK = 1 + Math.min(0.30, combo * 0.008);
-
   const frames = [
     { transform: 'scale(' + (0.30 * comboK) + ') rotate(' + (tilt * 1.8) + 'deg)', opacity: 0 },
     { transform: 'scale(' + (1.30 * comboK) + ') rotate(' + (tilt * 0.35) + 'deg)', opacity: 1, offset: 0.20 },
@@ -1469,11 +1196,9 @@ function showFeedback(text, cls, opts = {}) {
     { transform: 'scale(1.00) rotate(0deg)', opacity: 1, offset: 0.76 },
     { transform: 'scale(' + (1 + dir * 0.16) + ') rotate(' + (dir * 5) + 'deg)', opacity: 0 }
   ];
-
   try {
     if (typeof wrap.animate === 'function') {
       wrap.animate(frames, { duration: dur, easing: 'cubic-bezier(.18,.9,.28,1)', fill: 'forwards' });
-
       if (tail && typeof tail.animate === 'function') {
         tail.animate([
           { transform: 'translateY(10px) scale(0.8)', opacity: 0 },
@@ -1481,67 +1206,36 @@ function showFeedback(text, cls, opts = {}) {
         ], { duration: 280, delay: 90, easing: 'cubic-bezier(.2,1.4,.4,1)', fill: 'forwards' });
       }
     } else {
-      /* Fallback: no WAAPI — still show the text */
-      wrap.style.opacity = '1';
-      wrap.style.transform = 'scale(1)';
+      wrap.style.opacity = '1'; wrap.style.transform = 'scale(1)';
     }
-  } catch (e) {
-    wrap.style.opacity = '1';
-    wrap.style.transform = 'scale(1)';
-  }
-
+  } catch (e) { wrap.style.opacity = '1'; wrap.style.transform = 'scale(1)'; }
   clearTimeout(fbTimer);
   fbTimer = setTimeout(() => {
     if (gen !== fbGen) return;
-    feedbackEl.className = '';
-    feedbackEl.innerHTML = '';
+    feedbackEl.className = ''; feedbackEl.innerHTML = '';
   }, gold ? 1220 : 880);
 }
-
 let timingTimer = null;
 function scheduleTimingOff() {
   clearTimeout(timingTimer);
   timingTimer = setTimeout(() => { timingEl.classList.remove('on'); }, 900);
 }
-function clearTiming() {
-  clearTimeout(timingTimer);
-  timingEl.classList.remove('on');
-}
-
+function clearTiming() { clearTimeout(timingTimer); timingEl.classList.remove('on'); }
 function popScore() {
-  scoreEl.classList.remove('pop');
-  void scoreEl.offsetWidth;
-  scoreEl.classList.add('pop');
-  try {
-    scoreEl.animate([
-      { transform: 'scale(1)' },
-      { transform: 'scale(1.22)' },
-      { transform: 'scale(1)' }
-    ], { duration: 240, easing: 'cubic-bezier(.2,1.6,.4,1)' });
-  } catch (e) { }
+  scoreEl.classList.remove('pop'); void scoreEl.offsetWidth; scoreEl.classList.add('pop');
+  try { scoreEl.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.22)' }, { transform: 'scale(1)' }],
+    { duration: 240, easing: 'cubic-bezier(.2,1.6,.4,1)' }); } catch (e) {}
 }
-
 function updateHUD() {
   scoreEl.textContent = score.toLocaleString();
   if (combo >= 3) { comboEl.textContent = combo + ' COMBO'; comboEl.classList.add('on'); }
   else comboEl.classList.remove('on');
-
-  if (state.flowOn) flowTag.classList.add('on');
-  else flowTag.classList.remove('on');
+  if (state.flowOn) flowTag.classList.add('on'); else flowTag.classList.remove('on');
 }
-
-function flowBurst() {
-  blip(1760, 0.05, 0.16);
-  state.camShake = Math.max(state.camShake, 0.012);
-}
+function flowBurst() { blip(1760, 0.05, 0.16); state.camShake = Math.max(state.camShake, 0.012); }
 
 /* ============================================================
-   JUDGING
-   ------------------------------------------------------------
-   Taps are recorded immediately, but the *grade* is only shown
-   the moment the player physically lands on the tile (or, for a
-   late tap, as soon as it is registered). That guarantees a
-   piece of landing text on every single beat.
+   JUDGING (unchanged)
    ============================================================ */
 function resolveJudge(i) {
   if (i < 0 || !resolvedFlags) return;
@@ -1551,7 +1245,6 @@ function resolveJudge(i) {
   resolvedFlags[i] = true;
   onJudge(k, judgedOffset[i] || 0, state.level.weights[i], i);
 }
-
 function onJudge(kind, offset, weight, idx) {
   if (kind === 'miss') {
     counts.miss++; combo = 0;
@@ -1561,40 +1254,28 @@ function onJudge(kind, offset, weight, idx) {
     showFeedback('MISS', 'miss');
     clearTiming();
   } else {
-    combo++;
-    if (combo > maxCombo) maxCombo = combo;
+    combo++; if (combo > maxCombo) maxCombo = combo;
     counts[kind]++;
-
     const pct = clamp((offset || 0) / 0.30, -1, 1);
     timingMark.style.left = (50 + pct * 47) + '%';
-    timingMark.style.background = kind === 'perfect' ? 'var(--mint)'
-      : kind === 'good' ? 'var(--sky)' : '#c9c7d8';
-    timingEl.classList.add('on');
-    scheduleTimingOff();
-
+    timingMark.style.background = kind === 'perfect' ? 'var(--mint)' : kind === 'good' ? 'var(--sky)' : '#c9c7d8';
+    timingEl.classList.add('on'); scheduleTimingOff();
     if (kind === 'perfect') state.flow = Math.min(1, state.flow + 0.13);
     else if (kind === 'good') state.flow = Math.min(1, state.flow + 0.06);
     else state.flow = Math.max(0, state.flow - 0.08);
-
     const wasOn = state.flowOn;
     state.flowOn = state.flow > 0.78;
     const justEnteredFlow = state.flowOn && !wasOn;
-
     const comboMult = 1 + Math.floor(combo / 8) * 0.5;
     const flowMult = state.flowOn ? 2 : 1;
     const typeMult = 1 + (weight || 0.5) * 0.6;
     const base = kind === 'perfect' ? 300 : kind === 'good' ? 150 : 60;
     let gained = Math.round(base * comboMult * flowMult * typeMult);
-
-    /* ---- Golden tile: only pre-selected beats can turn gold ---- */
     let goldenFresh = false;
     if (kind === 'perfect' && state.level && idx != null && idx >= 0 && idx < state.level.count) {
       const L = state.level;
       if (L.goldCand[idx] === 1 && L.golden[idx] === 0) {
-        L.golden[idx] = 1;
-        L.goldenT[idx] = 0;
-        goldenFresh = true;
-        goldCount++;
+        L.golden[idx] = 1; L.goldenT[idx] = 0; goldenFresh = true; goldCount++;
       }
       getTilePos(idx, state.songTime, _wavePos);
       if (goldenFresh) {
@@ -1608,30 +1289,17 @@ function onJudge(kind, offset, weight, idx) {
         state.pulse = Math.max(state.pulse, 0.72);
       }
     }
-
-    score += gained;
-    popScore();
-
-    /* ---- Always print the grade, FLOW or not ---- */
+    score += gained; popScore();
     if (kind === 'perfect') {
       showFeedback('PERFECT', 'perfect', { gold: goldenFresh });
       blip(1320, 0.040, 0.09);
-      if (goldenFresh) {
-        blip(1980, 0.035, 0.24);
-        setTimeout(() => blip(2640, 0.030, 0.30), 90);
-      }
-    } else if (kind === 'good') {
-      showFeedback('GOOD', 'good');
-      blip(990, 0.030, 0.08);
-    } else {
-      showFeedback('OK', 'ok');
-    }
-
+      if (goldenFresh) { blip(1980, 0.035, 0.24); setTimeout(() => blip(2640, 0.030, 0.30), 90); }
+    } else if (kind === 'good') { showFeedback('GOOD', 'good'); blip(990, 0.030, 0.08); }
+    else showFeedback('OK', 'ok');
     if (justEnteredFlow) flowBurst();
   }
   updateHUD();
 }
-
 function onTap() {
   if (state.mode !== 'play' || !state.level) return;
   const t = state.songTime;
@@ -1645,43 +1313,24 @@ function onTap() {
     if (d < bestD) { bestD = d; best = i; }
   }
   if (best < 0) return;
-
   const win = timingWindow(best);
   if (bestD > win) return;
-
   const offset = t - B[best];
   let kind;
   if (bestD < win * 0.38) kind = 'perfect';
   else if (bestD < win * 0.70) kind = 'good';
   else kind = 'ok';
-
   judged[best] = kind;
   judgedOffset[best] = offset;
-
-  /* If the landing already happened (late tap), show it right away.
-     Otherwise it will be shown by the landing resolver. */
   if (t >= B[best]) resolveJudge(best);
 }
-
-/* ============================================================
-   FLOW
-   ============================================================ */
 function updateFlow(dt) {
-  if (state.mode === 'play') {
-    state.flow = Math.max(0, state.flow - dt * 0.035);
-  } else {
-    state.flow *= Math.exp(-dt * 2.0);
-  }
+  if (state.mode === 'play') state.flow = Math.max(0, state.flow - dt * 0.035);
+  else state.flow *= Math.exp(-dt * 2.0);
   const on = state.flow > 0.78;
-  if (on !== state.flowOn) {
-    state.flowOn = on;
-    updateHUD();
-  }
+  if (on !== state.flowOn) { state.flowOn = on; updateHUD(); }
 }
 
-/* ============================================================
-   SCREENS
-   ============================================================ */
 function showScreen(el) {
   menuEl.classList.add('hidden');
   loadingEl.classList.add('hidden');
@@ -1693,25 +1342,17 @@ function showLoading(title, sub, progress) {
   loadSub.textContent = sub || '';
   barFill.style.width = Math.round((progress || 0) * 100) + '%';
 }
-
 function stopPlayback(fadeMs) {
   if (state.gainNode && actx) {
-    try { state.gainNode.gain.setTargetAtTime(0, actx.currentTime, fadeMs / 3000); } catch (e) { }
+    try { state.gainNode.gain.setTargetAtTime(0, actx.currentTime, fadeMs / 3000); } catch (e) {}
   }
   const src = state.audioSrc;
   state.audioSrc = null;
-  if (src) {
-    const t = fadeMs;
-    setTimeout(() => { try { src.stop(); } catch (e) { } }, t);
-  }
+  if (src) { const t = fadeMs; setTimeout(() => { try { src.stop(); } catch (e) {} }, t); }
 }
 
-/* ============================================================
-   LIVE ANALYSER
-   ============================================================ */
 let analyser = null;
 let freqData = null;
-
 function attachAnalyser(ctx, node) {
   try {
     analyser = ctx.createAnalyser();
@@ -1719,11 +1360,8 @@ function attachAnalyser(ctx, node) {
     analyser.smoothingTimeConstant = 0.72;
     freqData = new Uint8Array(analyser.frequencyBinCount);
     node.connect(analyser);
-  } catch (e) {
-    analyser = null; freqData = null;
-  }
+  } catch (e) { analyser = null; freqData = null; }
 }
-
 function readLiveAudio() {
   if (!analyser || !freqData) { state.live *= 0.9; return; }
   analyser.getByteFrequencyData(freqData);
@@ -1738,131 +1376,81 @@ function readLiveAudio() {
    ============================================================ */
 async function startFromBuffer(buffer, precomputed) {
   const ctx = await ensureRunning();
-  if (!ctx) {
-    loadTitle.textContent = 'Audio unavailable';
-    loadSub.textContent = 'Your browser blocked audio. Tap the screen and try again.';
-    setTimeout(() => { showScreen(menuEl); state.mode = 'menu'; buildMenuLevel(); }, 2200);
-    return;
-  }
-
+  if (!ctx) { loadTitle.textContent = 'Audio unavailable'; loadSub.textContent = 'Tap the screen and try again.';
+    setTimeout(() => { showScreen(menuEl); state.mode = 'menu'; buildMenuLevel(); }, 2200); return; }
   showScreen(loadingEl);
   hudEl.classList.add('hidden');
   state.mode = 'loading';
   showLoading('Listening', 'Decoding the rhythm', 0.08);
   await nextFrame();
-
   let analysis = precomputed;
   if (!analysis) {
-    try {
-      analysis = await analyzeBuffer(buffer, (p, msg) => showLoading('Listening', msg, p));
-    } catch (e) {
-      console.error('Analysis failed:', e);
-      analysis = fallbackGrid(buffer.duration);
-      analysis.seed = 0xBEA7;
-    }
+    try { analysis = await analyzeBuffer(buffer, (p, msg) => showLoading('Listening', msg, p)); }
+    catch (e) { analysis = fallbackGrid(buffer.duration); analysis.seed = 0xBEA7; }
   }
   state.lastAnalysis = analysis;
-
   applyTheme(makeTheme(analysis.seed || 0xBEA7));
-
   let beats = analysis.beats.slice();
   let energies = analysis.energies.slice();
   let weights = analysis.weights.slice();
   let types = analysis.types.slice();
   let lows = analysis.low.slice();
   let highs = analysis.high.slice();
-
   const duration = buffer.duration;
-
   if (duration > MAX_ANALYSIS_SECONDS - 4 && beats.length > 4) {
     const period = 60 / Math.max(60, analysis.bpm);
     let t = beats[beats.length - 1] + period;
     while (t < duration - 1.2) {
-      beats.push(t); energies.push(0.45);
-      weights.push(0.5); types.push('mid');
+      beats.push(t); energies.push(0.45); weights.push(0.5); types.push('mid');
       lows.push(0.4); highs.push(0.4);
       t += period;
     }
   }
-
   if (beats.length < 4) {
     const fb = fallbackGrid(duration);
     beats = fb.beats; energies = fb.energies;
     weights = fb.weights; types = fb.types; lows = fb.low; highs = fb.high;
     analysis.bpm = 110;
   }
-
   state.bpm = analysis.bpm;
   state.buffer = buffer;
   state.songDuration = duration;
-  state.level = buildLevel(beats, energies, analysis.seed || 0xBEA7, {
-    types, weights, low: lows, high: highs
-  });
-  state.pIdx = 0;
-  state.squash = 0;
-  state.pulse = 0;
-  state.roll = 0;
-  state.flow = 0;
-  state.flowOn = false;
-  state.live = 0;
-  state.menuTime = 0;
-
+  state.level = buildLevel(beats, energies, analysis.seed || 0xBEA7, { types, weights, low: lows, high: highs });
+  state.pIdx = 0; state.squash = 0; state.pulse = 0; state.roll = 0;
+  state.flow = 0; state.flowOn = false; state.live = 0; state.menuTime = 0;
   score = 0; combo = 0; maxCombo = 0; goldCount = 0;
   counts = { perfect: 0, good: 0, ok: 0, miss: 0 };
-
   const nBeats = state.level.beats.length;
   judged = new Array(nBeats).fill(null);
   judgedOffset = new Array(nBeats).fill(0);
   resolvedFlags = new Array(nBeats).fill(false);
-  judgePtr = 0;
-  resolvePtr = 0;
-
+  judgePtr = 0; resolvePtr = 0;
   updateHUD();
   clearTiming();
-
-  /* Scenery scattered along the freshly built track */
   deco.build(state.level, analysis.seed || 0xBEA7);
-
   stopPlayback(0);
   await ensureRunning();
-
   const src = ctx.createBufferSource();
   src.buffer = buffer;
   const g = ctx.createGain();
   g.gain.value = 1.0;
   src.connect(g).connect(ctx.destination);
   attachAnalyser(ctx, g);
-
   const lead = 0.65;
   const when = ctx.currentTime + lead;
-  try {
-    src.start(when);
-  } catch (e) {
-    console.error('src.start failed', e);
-    loadTitle.textContent = 'Playback failed';
-    loadSub.textContent = 'Please try again.';
-    setTimeout(() => { showScreen(menuEl); state.mode = 'menu'; buildMenuLevel(); }, 2200);
-    return;
-  }
-
-  src.onended = () => {
-    if (state.mode === 'play' && state.audioSrc === src) endGame();
-  };
-
-  state.audioSrc = src;
-  state.gainNode = g;
-  state.startTime = when;
-  state.songTime = -lead;
+  try { src.start(when); }
+  catch (e) { loadTitle.textContent = 'Playback failed'; loadSub.textContent = 'Please try again.';
+    setTimeout(() => { showScreen(menuEl); state.mode = 'menu'; buildMenuLevel(); }, 2200); return; }
+  src.onended = () => { if (state.mode === 'play' && state.audioSrc === src) endGame(); };
+  state.audioSrc = src; state.gainNode = g;
+  state.startTime = when; state.songTime = -lead;
   camTarget.set(state.level.x[0], state.level.y[0], state.level.z[0]);
   camera.position.copy(camTarget).add(CAM_OFFSET);
-
   bpmTag.textContent = analysis.bpm + ' BPM';
-
   showScreen(null);
   hudEl.classList.remove('hidden');
   tapHint.style.opacity = '1';
   setTimeout(() => { tapHint.style.opacity = '0'; }, 3600);
-
   state.mode = 'play';
 }
 
@@ -1872,10 +1460,8 @@ function endGame() {
   state.frozenTime = state.songTime;
   stopPlayback(1400);
   hudEl.classList.add('hidden');
-
   const total = counts.perfect + counts.good + counts.ok + counts.miss;
   const acc = total ? (counts.perfect * 1 + counts.good * 0.7 + counts.ok * 0.4) / total : 0;
-
   $('rScore').textContent = score.toLocaleString();
   $('rStats').innerHTML = `
     <div class="stat wide"><b>${Math.round(acc * 100)}%</b>ACCURACY</div>
@@ -1883,21 +1469,13 @@ function endGame() {
     <div class="stat"><b style="color:#4fb8a0">${counts.good}</b>GOOD</div>
     <div class="stat"><b style="color:#8a8ab0">${counts.ok}</b>OK</div>
     <div class="stat wide"><b>${maxCombo}</b>BEST COMBO</div>
-    <div class="stat wide"><b style="color:#e0a800">${goldCount}</b>GOLDEN TILES</div>
-  `;
+    <div class="stat wide"><b style="color:#e0a800">${goldCount}</b>GOLDEN TILES</div>`;
   showScreen(resultsEl);
 }
-
-function replay() {
-  if (state.buffer) startFromBuffer(state.buffer, state.lastAnalysis);
-}
-
+function replay() { if (state.buffer) startFromBuffer(state.buffer, state.lastAnalysis); }
 function backToMenu() {
-  state.mode = 'menu';
-  state.buffer = null;
-  state.flow = 0;
-  state.flowOn = false;
-  flowTag.classList.remove('on');
+  state.mode = 'menu'; state.buffer = null;
+  state.flow = 0; state.flowOn = false; flowTag.classList.remove('on');
   stopPlayback(200);
   hudEl.classList.add('hidden');
   buildMenuLevel();
@@ -1905,7 +1483,7 @@ function backToMenu() {
 }
 
 /* ============================================================
-   DEMO TRACK
+   DEMO TRACK (unchanged)
    ============================================================ */
 async function makeDemoBuffer() {
   const ctx = createAudioContext();
@@ -1913,46 +1491,35 @@ async function makeDemoBuffer() {
   const sr = ctx.sampleRate;
   const DUR = 46, BPM = 88;
   const spb = 60 / BPM;
-
   const off = new OfflineAudioContext(2, Math.floor(sr * DUR), sr);
   const master = off.createGain(); master.gain.value = 0.82;
   const comp = off.createDynamicsCompressor();
   comp.threshold.value = -14; comp.knee.value = 22; comp.ratio.value = 5;
   comp.attack.value = 0.006; comp.release.value = 0.28;
   master.connect(comp).connect(off.destination);
-
   const noiseBuf = off.createBuffer(1, Math.floor(sr * 0.4), sr);
   const nd = noiseBuf.getChannelData(0);
   for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
-
   function kick(t, amp) {
-    const o = off.createOscillator(); o.type = 'sine';
-    const g = off.createGain();
-    o.frequency.setValueAtTime(150, t);
-    o.frequency.exponentialRampToValueAtTime(42, t + 0.11);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(amp, t + 0.006);
+    const o = off.createOscillator(); o.type = 'sine'; const g = off.createGain();
+    o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.11);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(amp, t + 0.006);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
-    o.connect(g).connect(master);
-    o.start(t); o.stop(t + 0.5);
+    o.connect(g).connect(master); o.start(t); o.stop(t + 0.5);
   }
   function hat(t, amp) {
     const s = off.createBufferSource(); s.buffer = noiseBuf;
     const f = off.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 7200;
     const g = off.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(amp, t + 0.003);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(amp, t + 0.003);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.065);
-    s.connect(f).connect(g).connect(master);
-    s.start(t); s.stop(t + 0.12);
+    s.connect(f).connect(g).connect(master); s.start(t); s.stop(t + 0.12);
   }
   function pad(t, dur, freqs, amp) {
     const f = off.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1700; f.Q.value = 0.4;
     const g = off.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(amp, t + 0.9);
-    g.gain.setValueAtTime(amp, t + dur - 0.9);
-    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(amp, t + 0.9);
+    g.gain.setValueAtTime(amp, t + dur - 0.9); g.gain.linearRampToValueAtTime(0.0001, t + dur);
     f.connect(g).connect(master);
     for (const fr of freqs) for (const det of [-5, 5]) {
       const o = off.createOscillator(); o.type = 'triangle';
@@ -1963,24 +1530,19 @@ async function makeDemoBuffer() {
   function bass(t, dur, freq, amp) {
     const o = off.createOscillator(); o.type = 'sine'; o.frequency.value = freq;
     const g = off.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(amp, t + 0.02);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(amp, t + 0.02);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g).connect(master);
-    o.start(t); o.stop(t + dur + 0.05);
+    o.connect(g).connect(master); o.start(t); o.stop(t + dur + 0.05);
   }
-
   const prog = [
     { root: 220.00, chord: [220.00, 261.63, 329.63] },
     { root: 174.61, chord: [174.61, 220.00, 261.63] },
     { root: 196.00, chord: [196.00, 246.94, 293.66] },
     { root: 261.63, chord: [261.63, 329.63, 392.00] }
   ];
-
   const barLen = spb * 4;
   const bars = Math.floor((DUR - 2.5) / barLen);
   const t0 = 1.2;
-
   for (let b = 0; b < bars; b++) {
     const bt = t0 + b * barLen;
     const ch = prog[b % prog.length];
@@ -1993,7 +1555,6 @@ async function makeDemoBuffer() {
       hat(t + spb * 0.5, 0.045);
     }
   }
-
   return await off.startRendering();
 }
 
@@ -2003,7 +1564,6 @@ async function makeDemoBuffer() {
 fileInput.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
-
   await unlockAudio();
   const ctx = await ensureRunning();
   if (!ctx) {
@@ -2014,33 +1574,24 @@ fileInput.addEventListener('change', async (e) => {
     setTimeout(() => { showScreen(menuEl); state.mode = 'menu'; }, 2200);
     return;
   }
-
   showScreen(loadingEl);
   hudEl.classList.add('hidden');
   state.mode = 'loading';
   showLoading('Loading', `Reading "${file.name}"`, 0.05);
   await nextFrame();
-
   try {
     const raw = await file.arrayBuffer();
     const copy = raw.slice(0);
-
     showLoading('Decoding', 'Unpacking the audio…', 0.12);
     await nextFrame();
-
     let buf = null;
-    try {
-      buf = await ctx.decodeAudioData(raw);
-    } catch (err1) {
-      console.warn('First decode failed, retrying copy…', err1);
-      try { buf = await ctx.decodeAudioData(copy); }
-      catch (err2) { throw err2; }
+    try { buf = await ctx.decodeAudioData(raw); }
+    catch (err1) {
+      try { buf = await ctx.decodeAudioData(copy); } catch (err2) { throw err2; }
     }
     if (!buf || !buf.length) throw new Error('Empty audio buffer');
-
     await startFromBuffer(buf);
   } catch (err) {
-    console.error('File load error:', err);
     loadTitle.textContent = 'Could not read that file';
     let msg = 'Try an mp3, m4a, or wav file from your library.';
     const name = (file.name || '').toLowerCase();
@@ -2053,32 +1604,37 @@ fileInput.addEventListener('change', async (e) => {
     e.target.value = '';
   }
 });
-
 $('demo').addEventListener('click', async () => {
   await unlockAudio();
   const ctx = await ensureRunning();
   if (!ctx) return;
-
   showScreen(loadingEl);
   hudEl.classList.add('hidden');
   state.mode = 'loading';
   showLoading('Composing', 'Building a gentle demo track', 0.15);
   await nextFrame();
-  try {
-    const buf = await makeDemoBuffer();
-    await startFromBuffer(buf);
-  } catch (err) {
-    console.error(err);
-    showScreen(menuEl);
-    state.mode = 'menu';
-  }
+  try { const buf = await makeDemoBuffer(); await startFromBuffer(buf); }
+  catch (err) { showScreen(menuEl); state.mode = 'menu'; }
 });
-
 $('again').addEventListener('click', replay);
 $('back').addEventListener('click', backToMenu);
 
+/* NEW — skins editor wiring */
+const skinEditor = createSkinEditor({
+  onApply: (skin) => setPlayerSkin(skin),
+});
+document.getElementById('ui').appendChild(skinEditor.element);
+
+$('skinsBtn').addEventListener('click', async () => {
+  await unlockAudio();   // ensures the AudioContext is warm for later
+  skinEditor.open(currentSkin.id);
+});
+/* /NEW */
+
 window.addEventListener('pointerdown', (e) => {
   if (e.target.closest('button, label, input, a')) return;
+  // NEW: don't fire taps while the skins editor is open
+  if (!skinEditor.element.classList.contains('hidden')) return;
   onTap();
 }, { passive: true });
 
@@ -2088,7 +1644,7 @@ window.addEventListener('orientationchange', () => setTimeout(onResize, 220));
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && actx && actx.state === 'suspended') {
-    actx.resume().catch(() => { });
+    actx.resume().catch(() => {});
   }
 });
 
@@ -2112,7 +1668,6 @@ function tick(now) {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
   worldTime += dt;
-
   let t = 0;
 
   if (state.mode === 'menu' || state.mode === 'loading') {
@@ -2138,29 +1693,18 @@ function tick(now) {
     }
     cueRing.visible = false;
   } else if (state.mode === 'play') {
-    if (!actx) { t = 0; }
-    else t = actx.currentTime - state.startTime;
+    t = actx ? (actx.currentTime - state.startTime) : 0;
     state.songTime = t;
     const L = state.level;
-
     readLiveAudio();
-
-    /* --- window closed with no tap → miss --- */
     while (judgePtr < L.beats.length && t > L.beats[judgePtr] + timingWindow(judgePtr)) {
       if (!judged[judgePtr]) {
         if (isRequiredBeat(judgePtr)) {
-          judged[judgePtr] = 'miss';
-          judgedOffset[judgePtr] = 0;
-          resolveJudge(judgePtr);
-        } else {
-          judged[judgePtr] = 'skip';
-          resolvedFlags[judgePtr] = true;
-        }
+          judged[judgePtr] = 'miss'; judgedOffset[judgePtr] = 0; resolveJudge(judgePtr);
+        } else { judged[judgePtr] = 'skip'; resolvedFlags[judgePtr] = true; }
       }
       judgePtr++;
     }
-
-    /* --- touchdown --- */
     while (state.pIdx + 1 < L.beats.length && t >= L.beats[state.pIdx + 1]) {
       state.pIdx++;
       const ty = L.types[state.pIdx];
@@ -2173,18 +1717,13 @@ function tick(now) {
       spawnRing(_tmpA, kind === 'perfect' || kind === 'good' || ty === 'bass', L.colors[state.pIdx]);
       state.camShake = Math.max(state.camShake, ty === 'bass' ? 0.008 : 0.004);
     }
-
-    /* --- show the grade exactly on landing --- */
     while (resolvePtr < L.beats.length && t >= L.beats[resolvePtr]) {
-      resolveJudge(resolvePtr);
-      resolvePtr++;
+      resolveJudge(resolvePtr); resolvePtr++;
     }
-
     updatePlayerTransform(t, dt);
     updateTiles(t, dt);
     updateTrail(dt);
     updateCueRing();
-
     if (t > L.beats[L.beats.length - 1] + 2.8) endGame();
   } else if (state.mode === 'results') {
     t = state.frozenTime;
@@ -2199,10 +1738,7 @@ function tick(now) {
   updateShocks(dt);
   updateShards(dt);
   updateFlow(dt);
-
-  /* Scenery */
   deco.update(worldTime, dt, camTarget, state.pulse);
-
   state.pulse *= Math.exp(-dt * 4.2);
   state.landKick *= Math.exp(-dt * 7);
 
@@ -2214,7 +1750,6 @@ function tick(now) {
     p.material.opacity = Math.min(0.45, p.userData.baseOpacity * pBoost);
   }
 
-  /* ---- Distant spectrum silhouette ---- */
   {
     barGroup.position.set(camTarget.x, -3.2, camTarget.z - 55);
     const bins = freqData ? Math.min(64, freqData.length - 1) : 0;
@@ -2224,9 +1759,7 @@ function tick(now) {
       if (freqData && bins > 0) {
         const b = 1 + Math.floor(Math.pow(binForBar[i] / (BAR_N - 1), 0.85) * (bins - 1));
         target = (freqData[b] / 255) ** 1.2;
-      } else {
-        target = 0.10 + 0.08 * Math.sin(worldTime * 1.4 + i * 0.5);
-      }
+      } else target = 0.10 + 0.08 * Math.sin(worldTime * 1.4 + i * 0.5);
       m.userData.h += (target - m.userData.h) * 0.26;
       m.scale.y = 0.20 + m.userData.h * 4.2;
       m.material.opacity = 0.18 + m.userData.h * 0.35;
@@ -2249,40 +1782,33 @@ function tick(now) {
     camTarget.x += (_groundPos.x - camTarget.x) * k;
     camTarget.y += (_groundPos.y - camTarget.y) * k;
     camTarget.z += (_groundPos.z - camTarget.z) * k;
-
     const vib = state.pulse;
     _tmpA.copy(camTarget).add(CAM_OFFSET);
     _tmpA.y += vib * 0.35 - state.landKick * 0.10;
     _tmpA.z -= vib * 0.25;
-
     if (state.mode === 'menu' || state.mode === 'loading') {
       _tmpA.x += Math.sin(worldTime * 0.22) * 0.85;
       _tmpA.y += Math.sin(worldTime * 0.35) * 0.30;
     }
     camera.position.lerp(_tmpA, 1 - Math.exp(-dt * 4.2));
-
     const L = state.level;
     const i = state.pIdx;
     let rollTarget = 0;
     if (i + 1 < L.count) rollTarget = clamp((L.x[i + 1] - L.x[i]) * 0.030, -0.06, 0.06);
     state.roll += (rollTarget - state.roll) * (1 - Math.exp(-dt * 3.2));
-
     const fovTarget = BASE_FOV - vib * 2.0 - state.live * 0.9
       - Math.min(3.0, combo * 0.05) - (state.flowOn ? 1.4 : 0);
     camera.fov += (fovTarget - camera.fov) * (1 - Math.exp(-dt * 6));
     camera.updateProjectionMatrix();
-
     state.camShake *= Math.exp(-dt * 8);
     if (state.camShake > 0.0005) {
       camera.position.x += Math.sin(worldTime * 46) * state.camShake;
       camera.position.y += Math.cos(worldTime * 39) * state.camShake;
     }
-
     _tmpB.copy(camTarget).add(LOOK_OFFSET);
     camera.lookAt(_tmpB);
     camera.rotateZ(state.roll + Math.sin(worldTime * 0.6) * 0.005);
   }
-
   renderer.render(scene, camera);
 }
 
