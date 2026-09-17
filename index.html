@@ -68,8 +68,11 @@
         <div class="preset-list" id="presetList" role="list"></div>
 
         <div class="preset-actions">
+          <button class="btn primary" id="presetAddFiles">＋ Add songs from this device</button>
           <button class="btn ghost" id="presetsBack">Back</button>
         </div>
+        <input id="presetFiles" type="file"
+          accept="audio/*,.mp3,.m4a,.aac,.wav,.aif,.aiff,.ogg,.oga,.caf" multiple hidden>
       </div>
     </div>
 
@@ -110,6 +113,8 @@ const timingEl = $('timing'), timingMark = $('timingMark'), flowTag = $('flowTag
 const presetListEl = $('presetList'), presetSubEl = $('presetSub');
 const presetsCountEl = $('presetsCount'), presetHeaderCountEl = $('presetHeaderCount');
 const presetsBtn = $('presetsBtn'), presetsBackBtn = $('presetsBack');
+const presetAddBtn = $('presetAddFiles');
+const presetFilesInput = $('presetFiles');
 
 const nextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
@@ -126,6 +131,10 @@ const wrapHue = h => ((h % 360) + 360) % 360;
         ending in an audio extension.
      3. Also tries  presongs/songs.json  if it exists.
      4. Finally falls back to the PRESET_SONGS array below.
+
+   If your server refuses to list the folder, drop a
+   presongs/songs.json in place, or use the
+   "Add songs from this device" button on the preset screen.
 
    IMPORTANT: this only works when the page is SERVED over
    http:// or https://  — NOT when opened as a file:// URL.
@@ -202,6 +211,12 @@ async function fetchWithTimeout(url, ms) {
   }
 }
 
+/* ---------- detect an SPA-style fallback (server returned our own HTML) ---------- */
+function looksLikeAppShell(text) {
+  return /<canvas\s+id=["']c["']/i.test(text)
+      || /<title>\s*Prism\s*s-tile\s*<\/title>/i.test(text);
+}
+
 /* ---------- extract a candidate file path from any string ---------- */
 function collectPresetFile(rawHref, found) {
   if (!rawHref) return;
@@ -270,6 +285,13 @@ async function discoverFromDirectory() {
 
     if (!text || text.length < 8) {
       lastDiscoveryReport.push(`✗ ${url} — empty response`);
+      continue;
+    }
+
+    // If the server hands us the app's own shell, there's no listing —
+    // bail immediately instead of hunting for audio in our own HTML.
+    if (looksLikeAppShell(text)) {
+      lastDiscoveryReport.push(`✗ ${url} — server returned the app's own HTML (no directory listing)`);
       continue;
     }
 
@@ -413,6 +435,7 @@ function renderPresetList(list) {
           <div class="preset-cmds preset-cmds-block">
             <code>[{ "file": "presongs/Y2Mate.is - DECO_27 - feat .mp3" }]</code>
           </div>
+          Or tap <b>Add songs from this device</b> below to pick files straight from your machine.
         </div>
         ${reportHtml}
       </div>
@@ -448,6 +471,7 @@ function renderPresetList(list) {
 
 function shortFile(path) {
   if (!path) return '';
+  if (path.startsWith('blob:')) return 'local file';
   const parts = String(path).split('/');
   return parts[parts.length - 1];
 }
@@ -506,6 +530,7 @@ async function playPreset(song, el) {
   try {
     // The browser URL-encodes any spaces / unicode when fetching, so
     // "presongs/Y2Mate.is - DECO_27 - feat .mp3" resolves correctly.
+    // Blob URLs (from the "Add songs" picker) fetch fine too.
     const res = await fetch(song.file, { cache: 'no-cache' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const raw = await res.arrayBuffer();
@@ -2880,6 +2905,27 @@ presetsBtn.addEventListener('click', () => { openPresets(); });
 presetsBackBtn.addEventListener('click', () => {
   state.mode = 'menu';
   showScreen(menuEl);
+});
+
+presetAddBtn.addEventListener('click', () => presetFilesInput.click());
+
+presetFilesInput.addEventListener('change', (e) => {
+  const files = Array.from(e.target.files || []);
+  e.target.value = '';
+  if (!files.length) return;
+
+  const added = files.map(f => {
+    const meta = parseFilename(f.name);
+    return {
+      title: meta.title,
+      artist: meta.artist,
+      file: URL.createObjectURL(f),   // local blob URL, works everywhere
+      local: true
+    };
+  });
+
+  presetSubEl.textContent = 'Pick a track from your collection';
+  renderPresetList(presetCache.concat(added));
 });
 
 $('again').addEventListener('click', replay);
